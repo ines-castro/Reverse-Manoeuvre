@@ -1,6 +1,7 @@
 import numpy as np
 import yaml
 import time
+import threading
 import geometry_solver, control
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -16,6 +17,7 @@ class Simulation():
         - target: list of 2 elements [x_target, y_target] or -1 for no target 
         '''
 
+        # -------- Configration for the simulation --------
         with open(config_path) as f:
             config = yaml.safe_load(f)
 
@@ -39,28 +41,33 @@ class Simulation():
             configs = config
         )
 
-        # Assume the cart starts aligned with the robot
-        self.hitch_angle = 0.0
+        # -------- State and history data --------
         self.cart_state = self.control.cart_model(self.state)
+        self.x_history, self.y_history = [], []
+        self.cart_x_history, self.cart_y_history = [], []
+        self.cross_error_history, self.heading_error_history = [], []
+        self.time_history = []
+        self.current_time = 0.0
+        self.current_vx, self.current_w = 0.0, 0.0
 
-        self.simulation_running = True
-        self.x_history = []
-        self.y_history = []
-        self.cart_x_history = []
-        self.cart_y_history = []
-        self.cross_error_history = []
-        self.heading_error_history = []
-
+        # -------- UI Setup --------
         self.plot_design()
         self.add_widgets()
-        
-        # Update the figure 
         self.update_text(0.0, 0.0)
         self.update_radio_choice('Control') 
-
         self.debug_plot()
 
-        self.loop()
+        # -------- Decoupling of physics and visualization --------
+        self.simulation_running = True
+        self.lock = threading.Lock()
+
+        # Physics runs in the background
+        self.physics_thread = threading.Thread(target=self.physics_loop, daemon=True)
+        self.physics_thread.start()
+        self.dt = config['physics']['dt']
+
+        # UI runs in the foreground
+        self.ui_loop()
 
     def plot_design(self):
         '''
@@ -75,6 +82,7 @@ class Simulation():
         
         # Start graph 
         self.fig = plt.figure(figsize=(10, 6))
+        self.fig_number = plt.get_fignums()[0]
         gs = self.fig.add_gridspec(2, 2, width_ratios=[2, 1], height_ratios=[1, 1], 
                                hspace=0.3, wspace=0.3, bottom=0.15)
 
@@ -207,7 +215,6 @@ class Simulation():
         Stop the simulation when the button is clicked
         '''
         self.simulation_running = False
-        plt.close()
 
     def update_radio_choice(self, label):
         if label == 'Control':
@@ -264,47 +271,68 @@ class Simulation():
     # ---------------------------------------------------------
     # LOOP 
     # ---------------------------------------------------------
-    def loop(self):
+    def physics_loop(self):
+        '''
+        High frequency backgroud thread for mathematics
+        '''
+        while self.simulation_running:
+            start_tick = time.time()
+            new_state, new_cart_state, vx, w, e_cross, e_heading, finished = \
+                self.control.path_following(self.state, self.target)
+            
+            # Update the shared state with locking to prevent
+            with self.lock:
+                self.state = new_state
+                self.cart_state = new_cart_state
+                self.current_vx = vx
+                self.current_w = w
+
+                # Update histories
+                self.current_time += self.dt
+                self.time_history.append(self.current_time)
+                self.x_history.append(self.state[0])
+                self.y_history.append(self.state[1])
+                self.cart_x_history.append(self.cart_state[0])
+                self.cart_y_history.append(self.cart_state[1])
+                self.cross_error_history.append(e_cross)
+                self.heading_error_history.append(e_heading)
+
+                if finished:
+                    self.simulation_running = False
+                    print("--- Physics Engine shutting down. ---")
+                    break
+            
+            # How long the computer took to do the math
+            elapsed = time.time() - start_tick
+            time.sleep(max(0, self.dt - elapsed))
+
+    def ui_loop(self):
         '''
         Main loop to plot the robot's movement
         '''
-        dt = 0.05  # Time step for the simulation
-        self.current_time = 0.0
-        self.time_history = []
-
-        # Plot initial states
         self.plot_state()
 
-        while self.simulation_running:
+        while plt.fignum_exists(self.fig.number):
+            with self.lock:
+                # Update the plot with the latest state
+                self.plot_state()
+                self.update_text(self.current_vx, self.current_w)
 
-            # Update time tracking
-            self.current_time += dt
-            self.time_history.append(self.current_time)
+                if self.debug_mode: 
+                    self.plot_cross_track_error(self.cross_error_history[-1])
+                    self.plot_heading_error(self.heading_error_history[-1])
 
-            self.state, self.cart_state, vx, w, e_cross, e_heading = self.control.path_following(self.state, self.target)
-            print(f"Cart pose in the loop: {self.cart_state} \n")
-            self.cross_error_history.append(e_cross)
-            self.heading_error_history.append(e_heading)
+            # How often my screen updates
+            plt.pause(0.01)
 
-            # Plot and update velocity inputs
-            self.plot_state()
-            self.update_text(vx, w)
-
-            plt.pause(0.005)
-            
-            if self.debug_mode: 
-                self.plot_cross_track_error(e_cross)
-                self.plot_heading_error(e_heading)
-
-        print("Stopped simulation.")
+        self.simulation_running = False
+        print("Figure closed, stopping simulation.")
 
     # ---------------------------------------------------------
     # MOVEMENT UPDATE
     # ---------------------------------------------------------
     def plot_state(self):
 
-        self.x_history.append(self.state[0])
-        self.y_history.append(self.state[1])
         self.trajectory_line.set_data(self.x_history, self.y_history)
 
         # Update robot state
@@ -314,8 +342,6 @@ class Simulation():
         self.fig.canvas.draw()
 
         # Update cart position
-        self.cart_x_history.append(self.cart_state[0])
-        self.cart_y_history.append(self.cart_state[1])
         self.cart_trajectory_line.set_data(self.cart_x_history, self.cart_y_history)
         self.cart_center.set_data([self.cart_state[0]], [self.cart_state[1]])
         self.cart.set_xy((self.cart_state[0] - self.cart_width / 2, self.cart_state[1] - self.cart_length / 2))
@@ -324,7 +350,6 @@ class Simulation():
         self.ax_path.relim()
         self.ax_path.autoscale_view()
         self.ax_path.set_aspect('equal')
-
 
     def plot_cross_track_error(self, error: float):
         self.line_cross.set_data(self.time_history, self.cross_error_history)
@@ -338,6 +363,3 @@ class Simulation():
         self.ax_heading_error.relim()
         self.ax_heading_error.autoscale_view()
 
-#teste = Simulation([1.0, 3.0, np.deg2rad(45)], target=[0, 0]) # With r of 0.5
-
-#teste = Simulation([0.7, 8.0, np.deg2rad(45)], target=[0.0, 0.0]) # Initial state: [x, y, theta]

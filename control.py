@@ -233,10 +233,12 @@ class Controller:
         # # w_magnitude = np.degrees(self.vx / self.circle_radius)
 
         # Stop condition
+        finished = False
         if np.linalg.norm(np.array(cart_state[:2]) - np.array(target)) < 0.1:
             vx = 0.0
             w = 0.0
             print("Target reached!")
+            finished = True
 
         # Update State
         state = self.robot_model(state, [vx, w])
@@ -244,4 +246,4 @@ class Controller:
 
         print(f"########################### \n")
 
-        return state, cart_state, vx, w, e_cross, heading_error
+        return state, cart_state, vx, w, e_cross, heading_error, finished
