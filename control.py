@@ -22,11 +22,11 @@ class Controller:
         # Load cart dimensions
         cart_specs = configs['cart_dimensions']
         self.cart_width = cart_specs['width']
-        cart_length = cart_specs['length']
-        gripper_length = cart_specs['gripper_length']
+        self.fixed_wheel_dist = cart_specs['fixed_wheel_dist']
+        self.gripper_length = cart_specs['gripper_length']
 
         # Total distance between the robot's center and the cart's fixed wheels
-        self.cart_wheelbase = gripper_length + cart_length  
+        self.cart_wheelbase = self.gripper_length + self.fixed_wheel_dist  
 
         # Calculate the path guidelines
         graphic_helpers, control_helpers, overshoot_case = geometry_solver.calculate_path_geometry()
@@ -92,6 +92,7 @@ class Controller:
 
         # Cart Kinematics
         w_cart = (vx / self.cart_wheelbase) * np.sin(gamma)
+        w_cart = (vx * np.sin(gamma) - self.gripper_length * w * np.cos(gamma)) / self.fixed_wheel_dist
 
         d_hitch = w_cart - w
 
@@ -108,9 +109,14 @@ class Controller:
         '''
         Calculate the position and heading of the cart based on the robot's state
         '''
-        cart_heading = state[2] + state[3]
-        cart_x = state[0] - self.cart_wheelbase * np.cos(cart_heading)
-        cart_y = state[1] - self.cart_wheelbase * np.sin(cart_heading)
+        # Hitch point at the back of the robot
+        hitch_x = state[0] - self.gripper_length * np.cos(state[2])
+        hitch_y = state[1] - self.gripper_length * np.sin(state[2])
+
+        print(f"Hitch angle: {np.rad2deg(state[3])}° Cart heading: {np.rad2deg(state[2])}°")
+        cart_heading = state[2] + state[3] # hitch angle = cart heading - robot heading
+        cart_x = hitch_x - self.fixed_wheel_dist * np.cos(cart_heading)
+        cart_y = hitch_y - self.fixed_wheel_dist * np.sin(cart_heading)
         
         cart_state = [cart_x, cart_y, cart_heading]
 

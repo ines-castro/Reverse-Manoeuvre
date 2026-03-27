@@ -1,3 +1,5 @@
+from cmath import rect
+
 import numpy as np
 import yaml
 import time
@@ -23,7 +25,7 @@ class Simulation():
 
         # Initial parameters
         raw_state = config['physics']['initial_state']
-        self.state = np.array([raw_state[0], raw_state[1], np.deg2rad(raw_state[2]), 0.0])  
+        self.state = np.array([raw_state[0], raw_state[1], np.deg2rad(raw_state[2]), np.deg2rad(30)])  # Convert angles to radians
         self.target = config['physics']['target']
         self.turning_radius = config['physics']['turning_radius']
 
@@ -44,9 +46,11 @@ class Simulation():
         # -------- State and history data --------
         self.cart_state = self.control.cart_model(self.state)
         self.x_history, self.y_history = [], []
+        self.cart_history_patches = []
         self.cart_x_history, self.cart_y_history = [], []
         self.cross_error_history, self.heading_error_history = [], []
         self.time_history = []
+        self.dt = config['physics']['dt']
         self.current_time = 0.0
         self.current_vx, self.current_w = 0.0, 0.0
 
@@ -64,7 +68,6 @@ class Simulation():
         # Physics runs in the background
         self.physics_thread = threading.Thread(target=self.physics_loop, daemon=True)
         self.physics_thread.start()
-        self.dt = config['physics']['dt']
 
         # UI runs in the foreground
         self.ui_loop()
@@ -275,10 +278,25 @@ class Simulation():
         '''
         High frequency backgroud thread for mathematics
         '''
+        print(f"First state: {np.rad2deg(self.state[3])}")
         while self.simulation_running:
             start_tick = time.time()
-            new_state, new_cart_state, vx, w, e_cross, e_heading, finished = \
-                self.control.path_following(self.state, self.target)
+            #new_state, new_cart_state, vx, w, e_cross, e_heading, finished = \
+            #    self.control.path_following(self.state, self.target)
+
+
+            # -------- For debugging of kinematics --------
+            vx = -0.2
+            w = 0.3
+
+            new_state = self.control.robot_model(self.state, [vx, w])
+            new_cart_state = self.control.cart_model(new_state)
+            self.time_history.append(self.current_time)
+            self.cross_error_history.append(np.rad2deg(new_state[3]))
+            self.heading_error_history.append(np.rad2deg(new_state[2]))
+
+
+            print(f"State: {np.rad2deg(new_state[3])} \n Cart State: {np.rad2deg(new_cart_state[2])} \n")
             
             # Update the shared state with locking to prevent
             with self.lock:
@@ -287,20 +305,20 @@ class Simulation():
                 self.current_vx = vx
                 self.current_w = w
 
-                # Update histories
+                # Update histories                
                 self.current_time += self.dt
-                self.time_history.append(self.current_time)
+                #self.time_history.append(self.current_time)
                 self.x_history.append(self.state[0])
                 self.y_history.append(self.state[1])
                 self.cart_x_history.append(self.cart_state[0])
                 self.cart_y_history.append(self.cart_state[1])
-                self.cross_error_history.append(e_cross)
-                self.heading_error_history.append(e_heading)
+                #self.cross_error_history.append(e_cross)
+                #self.heading_error_history.append(e_heading)
 
-                if finished:
-                    self.simulation_running = False
-                    print("--- Physics Engine shutting down. ---")
-                    break
+                #if finished:
+                #    self.simulation_running = False
+                #    print("--- Physics Engine shutting down. ---")
+                #    break
             
             # How long the computer took to do the math
             elapsed = time.time() - start_tick
@@ -342,10 +360,28 @@ class Simulation():
         self.fig.canvas.draw()
 
         # Update cart position
-        self.cart_trajectory_line.set_data(self.cart_x_history, self.cart_y_history)
+        # self.cart_trajectory_line.set_data(self.cart_x_history, self.cart_y_history)
         self.cart_center.set_data([self.cart_state[0]], [self.cart_state[1]])
         self.cart.set_xy((self.cart_state[0] - self.cart_width / 2, self.cart_state[1] - self.cart_length / 2))
         self.cart.angle = np.rad2deg(self.cart_state[2])
+
+        # Add a patch every 10 frames for better performance
+        if len(self.cart_x_history) % 10 == 0:  
+            rect = Rectangle(
+                xy=(
+                    self.cart_state[0] - self.cart_width / 2,
+                    self.cart_state[1] - self.cart_length / 2
+                ),
+                width=self.cart_width,
+                height=self.cart_length,
+                edgecolor='cyan',
+                facecolor='none',
+                linewidth=0.8,
+                alpha=0.3,
+                angle=np.rad2deg(self.cart_state[2]),
+                rotation_point='center'
+            )
+            self.ax_path.add_patch(rect)     
 
         self.ax_path.relim()
         self.ax_path.autoscale_view()

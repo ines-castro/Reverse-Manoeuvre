@@ -12,7 +12,7 @@ controller:
   lookahead_distance: 0.5
 
 cart_dimensions:
-  width: 0.5
-  length: 0.25       # Distance of grabbing bar to fixed wheels
+  width: 0.7
+  length: 0.5     
   gripper_length: 0.45    # Distance from the robot's center to the gripper
-  fixed_wheel_dist: 0.25
+  fixed_wheel_dist: 0.25  # Distance of grabbing bar to fixed wheels
