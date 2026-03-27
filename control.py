@@ -1,0 +1,243 @@
+import numpy as np
+import pandas as pd
+import scipy
+import geometry_solver
+from scipy.optimize import minimize
+
+class Controller:
+
+    def __init__(self, initial_state, target, dt):
+        self.geometry_solver = geometry_solver.GeometrySolver()
+        self.dt = dt
+
+        # Calculate the path guidelines
+        graphic_helpers, control_helpers, overshoot_case = self.geometry_solver.calculate_path_geometry(initial_state, target, r=3.5)
+        # Unpack the necessary variables
+        waypoints = {
+            'initial': initial_state[:2],
+            'turning': control_helpers['turning_point'],
+            'exit': control_helpers['exit_point'],
+            'target': np.array(target)
+        }
+
+        # Defined the path by a discrete set of points
+        path_points = []
+        circles_centers = [graphic_helpers['circle_center'], graphic_helpers['circle2_center']]
+        for s in np.linspace(0, 8.3, 500):
+            pt = self.geometry_solver.path(s, waypoints, circles_centers, graphic_helpers['circle_radius'], overshoot_case)
+            path_points.append([pt[0], pt[1]])
+
+        # Save to csv for debugging purposes
+        df = pd.DataFrame(path_points, columns=['x', 'y'])
+        df.to_csv('coco.csv', index=False)
+
+        # Use it as reference for the path planning
+        self.path = np.array(path_points)
+
+        # Random parameters
+        self.constant_vx = -1.0
+        self.lookahead_distance = 0.5
+        self.kv = 0.4  # Proportional gain for linear velocity
+        self.kw = -0.7 # Proportional gain for angular velocity
+        self.last_w = 0.0  # Store the last angular velocity for smoothing
+        self.prev_hitch_error = 0.0
+
+        # Cart parameters
+        gripper_length = 0.45  # Distance from the robot's center to the gripper
+        cart_length = 0.25     # Distance of grabbing bar to fixed wheels
+        # Total distance between the robot's center and the cart's fixed wheels
+        self.cart_wheelbase = gripper_length + cart_length  
+
+    def robot_kinematics(self, vx, w, theta, hitch_angle):
+        '''
+        Calculates the state of the cart based on the robot' state
+        Args: 
+            vx: Linear velocity of the robot
+            w: Angular velocity of the robot
+            theta: Heading angle of the robot
+            hitch_angle: Angle between the robot and the cart
+        '''
+        dx = vx * np.cos(theta)
+        dy = vx * np.sin(theta)
+        dtheta = w
+        
+        # Cart Kinematics
+        w_cart = (vx / self.cart_wheelbase) * np.sin(hitch_angle)
+
+        d_hitch = w_cart - w
+            
+        return [dx, dy, dtheta, d_hitch]
+    
+    def robot_model(self, state, inputs):
+        '''
+        Simple kinematic model of the cart
+        Args:
+            state: State of the robot [x, y, theta, hitch_angle]
+            inputs: Control inputs [vx, w]
+        '''
+        x, y, theta, gamma = state
+        vx, w = inputs
+       
+        dx = vx * np.cos(theta)
+        dy = vx * np.sin(theta)
+        dtheta = w
+
+        # Cart Kinematics
+        w_cart = (vx / self.cart_wheelbase) * np.sin(gamma)
+
+        d_hitch = w_cart - w
+
+        x_next = x + dx * self.dt
+        y_next = y + dy * self.dt
+        theta_next = theta + dtheta * self.dt
+        gamma_next = gamma + d_hitch * self.dt
+
+        state_next = [x_next, y_next, theta_next, gamma_next]
+
+        return state_next
+    
+    def cart_model(self, state):
+        '''
+        Calculate the position and heading of the cart based on the robot's state
+        '''
+        cart_heading = state[2] + state[3]
+        cart_x = state[0] - self.cart_wheelbase * np.cos(cart_heading)
+        cart_y = state[1] - self.cart_wheelbase * np.sin(cart_heading)
+        
+        cart_state = [cart_x, cart_y, cart_heading]
+
+        return cart_state
+        
+    def cost(self, state, w_seq, closest_index, horizon):
+        '''
+        Drives the optimisation process by quantifying the error between the current state
+        and the the desired trajectory.
+        '''
+        current_state = np.array(state).copy()
+
+        K_dist = 8.0  # Weight for the distance cost
+        K_turn = 1.5   # Weight for the turning cost
+
+        # Avoid crashing when near the end of the path
+        end_index = closest_index + horizon 
+        if end_index <= len(self.path):
+            ref_path = self.path[closest_index:end_index]   
+        else: 
+            pad_length = end_index - len(self.path)
+            padding = np.repeat(self.path[-1][None, :], pad_length, axis=0)
+            ref_path = np.vstack((self.path[closest_index:], padding))
+
+        total_cost = 0.0
+        for i in range(horizon):
+
+            # Optimise only the angular velocity
+            w = w_seq[i]
+            inputs = [self.constant_vx, w] 
+
+            # Calculate the cart state at the next time step
+            state_i = self.robot_model(current_state, inputs)
+            cart_state_i = self.cart_model(state_i)
+            
+            # Calculate the distance from the cart state to the reference path point
+            distance = (cart_state_i[0] - ref_path[i][0]) ** 2 + (cart_state_i[1] - ref_path[i][1]) ** 2
+            turning = inputs[1] ** 2
+            total_cost += K_dist * distance + K_turn * turning
+
+            current_state = state_i
+
+        return total_cost
+
+    def path_following(self, state, target):
+        '''
+        Path planning mode where the robot calculates the velocities needed to reach the target
+        '''
+        # Cart current state
+        cart_state = self.cart_model(state)
+
+        print(f"Robot Position: {state[:2]} \n Robot Heading: {np.rad2deg(state[2])} \n Cart Position: {cart_state[0:2]} \n Cart Heading: {np.rad2deg(cart_state[2])} \n Hitch Angle: {np.rad2deg(state[3])} \n")
+
+        # ---- PURE PURSUIT ----
+
+        # Calculate the distances between each way point and robot position
+        distance_set = []
+        for i in range(len(self.path)):
+            path_point = self.path[i]
+            dist = np.linalg.norm(path_point - cart_state[:2])
+            distance_set.append(dist)
+
+        # Obtain the point which has the minimum distance to the robot position
+        min_index = np.argmin(distance_set)
+        closest_point = self.path[min_index]
+
+        # Local target way point
+        local_target = closest_point
+        # Search for the point in the path that is at least lookahead_distance away from the closest point
+        for i in range(min_index, len(self.path)):
+            dist = np.linalg.norm(self.path[i] - closest_point)
+            if dist >= self.lookahead_distance:
+                local_target = self.path[i]
+                break
+
+
+        # ---- MODEL PREDICTIVE CONTROL ----
+        horizon = 10
+        w_guess = np.full(horizon, self.last_w)
+        # Bounds for the control inputs
+        bounds = [(-np.deg2rad(45), np.deg2rad(45))] * horizon
+
+        res = minimize(
+            lambda u: self.cost(state, u, min_index, horizon),
+            w_guess,
+            method='SLSQP',
+            bounds=bounds,
+            options=dict(maxiter=100)
+        )
+
+        vx = self.constant_vx 
+        if res.success:
+            w = res.x[0]  # Optimal angular velocity for the first time step     
+            print(f"Optimized control inputs: vx = {vx:.2f} m/s, w = {np.rad2deg(w):.2f}°/s")
+        else:
+            print("Optimization failed, using default control inputs.")
+            w = -0.1
+        self.last_w = w  
+
+        # Calculate the cross track error
+        e_cross = np.linalg.norm(closest_point - cart_state[:2])
+
+        # Calculate target heading angle and angular difference
+        target_angle = np.arctan2(local_target[1] - state[1], local_target[0] - state[0])
+        heading_error = target_angle - state[2]
+
+        reverse_heading = state[2] + np.pi
+
+
+        heading_error = np.arctan2(np.sin(target_angle - reverse_heading), 
+                               np.cos(target_angle - reverse_heading))
+
+
+        # # Controlo Mixuruca
+        # print(f"Heading error: {np.rad2deg(heading_error):.2f}° | Cross track error: {e_cross:.2f}")
+        # vx = -self.kv
+        # w = self.kw * heading_error
+
+        # # Store values for next iteration
+        # # # 
+
+        print(f"Control commands: vx = {vx:.2f} m/s, w = {np.rad2deg(w):.2f}°/s")
+
+        # # w_magnitude = np.degrees(self.vx / self.circle_radius)
+
+        # Stop condition
+        if np.linalg.norm(np.array(cart_state[:2]) - np.array(target)) < 0.1:
+            vx = 0.0
+            w = 0.0
+            print("Target reached!")
+
+        # Update State
+        state = self.robot_model(state, [vx, w])
+        cart_state = self.cart_model(state)
+
+        print(f"########################### \n")
+
+        return state, cart_state, vx, w, e_cross, heading_error
