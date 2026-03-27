@@ -3,29 +3,32 @@ import numpy as np
 
 class GeometrySolver:
 
-    def __init__(self):
+    def __init__(self, state, target, turning_radius):
         self.debug = True
+        self.state = state
+        self.target = target
+        self.r = turning_radius
 
-    def calculate_path_geometry(self, state, target, r):
+    def calculate_path_geometry(self):
         '''
         Calculate the geometry of the path in all stages of reverse maneuver
         '''
         # Where the robot is currently aiming
-        m_heading = np.tan(math.pi/2 - state[2])
-        b_heading = state[1] - m_heading * state[0]
+        m_heading = np.tan(math.pi/2 - self.state[2])
+        b_heading = self.state[1] - m_heading * self.state[0]
 
         # ---- Mandatory turning circle ----
-        circle_radius = r
-        vertex, circle_center, _ = self.get_tangent_circle(m_heading, b_heading, float('inf'), target[0], state[:2], target, circle_radius)
+        circle_radius = self.r
+        vertex, circle_center, _ = self.get_tangent_circle(m_heading, b_heading, float('inf'), self.target[0], self.state[:2], self.target, circle_radius)
 
         # Calculate both tangent points to the circle
         tangent_heading, _ = self.get_intersection_line_circle(m_heading, b_heading, circle_center, circle_radius)
-        tangent_target, _ = self.get_intersection_line_circle(float('inf'), target[0], circle_center, circle_radius)
+        tangent_target, _ = self.get_intersection_line_circle(float('inf'), self.target[0], circle_center, circle_radius)
         tangent_points = [tangent_heading, tangent_target]
 
         # ---- Overshoot logic ----
-        heading_vector = np.array([np.cos(state[2]), np.sin(state[2])])
-        offset_vector = state[:2] - tangent_points[0]
+        heading_vector = np.array([np.cos(self.state[2]), np.sin(self.state[2])])
+        offset_vector = self.state[:2] - tangent_points[0]
        
         if np.dot(heading_vector, offset_vector) < 0:
 
@@ -37,7 +40,7 @@ class GeometrySolver:
             offset = np.linalg.norm(offset_vector)
 
             # Derive the center of the second triangle geometrically
-            x_c = target[0] - circle_radius
+            x_c = self.target[0] - circle_radius
             dx = (x_c - circle_center[0])**2
             dy = np.sqrt(max(0, (2 * circle_radius)**2 - dx))  # Pitagoras theorem
 
@@ -49,7 +52,7 @@ class GeometrySolver:
             # Used as a turning point
             circles_intersection = (circle2_center + circle_center) / 2
 
-            exit_point = self.get_intersection_line_circle(float('inf'), target[0], circle2_center, circle_radius)[0]
+            exit_point = self.get_intersection_line_circle(float('inf'), self.target[0], circle2_center, circle_radius)[0]
 
         else: 
             # The control points are the ones tangent to the first circle

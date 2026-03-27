@@ -1,17 +1,36 @@
 import numpy as np
 import pandas as pd
+import yaml
 import scipy
 import geometry_solver
 from scipy.optimize import minimize
 
 class Controller:
 
-    def __init__(self, initial_state, target, dt):
-        self.geometry_solver = geometry_solver.GeometrySolver()
-        self.dt = dt
+    def __init__(self, initial_state, target, geometry_solver, configs: dict):
+        
+        self.dt = configs['physics']['dt']
+
+        # Load controller tunning parameters
+        controller_config = configs['controller']
+        self.constant_vx = controller_config['constant_vx']
+        self.K_dist = controller_config['K_dist']
+        self.K_turn = controller_config['K_turn']
+        self.lookahead_distance = controller_config['lookahead_distance']
+        self.horizon = controller_config['horizon']
+
+        # Load cart dimensions
+        cart_specs = configs['cart_dimensions']
+        self.cart_width = cart_specs['width']
+        cart_length = cart_specs['length']
+        gripper_length = cart_specs['gripper_length']
+
+        # Total distance between the robot's center and the cart's fixed wheels
+        self.cart_wheelbase = gripper_length + cart_length  
 
         # Calculate the path guidelines
-        graphic_helpers, control_helpers, overshoot_case = self.geometry_solver.calculate_path_geometry(initial_state, target, r=3.5)
+        graphic_helpers, control_helpers, overshoot_case = geometry_solver.calculate_path_geometry()
+
         # Unpack the necessary variables
         waypoints = {
             'initial': initial_state[:2],
@@ -24,7 +43,7 @@ class Controller:
         path_points = []
         circles_centers = [graphic_helpers['circle_center'], graphic_helpers['circle2_center']]
         for s in np.linspace(0, 8.3, 500):
-            pt = self.geometry_solver.path(s, waypoints, circles_centers, graphic_helpers['circle_radius'], overshoot_case)
+            pt = geometry_solver.path(s, waypoints, circles_centers, graphic_helpers['circle_radius'], overshoot_case)
             path_points.append([pt[0], pt[1]])
 
         # Save to csv for debugging purposes
@@ -34,19 +53,8 @@ class Controller:
         # Use it as reference for the path planning
         self.path = np.array(path_points)
 
-        # Random parameters
-        self.constant_vx = -1.0
-        self.lookahead_distance = 0.5
-        self.kv = 0.4  # Proportional gain for linear velocity
-        self.kw = -0.7 # Proportional gain for angular velocity
         self.last_w = 0.0  # Store the last angular velocity for smoothing
         self.prev_hitch_error = 0.0
-
-        # Cart parameters
-        gripper_length = 0.45  # Distance from the robot's center to the gripper
-        cart_length = 0.25     # Distance of grabbing bar to fixed wheels
-        # Total distance between the robot's center and the cart's fixed wheels
-        self.cart_wheelbase = gripper_length + cart_length  
 
     def robot_kinematics(self, vx, w, theta, hitch_angle):
         '''
@@ -115,9 +123,6 @@ class Controller:
         '''
         current_state = np.array(state).copy()
 
-        K_dist = 8.0  # Weight for the distance cost
-        K_turn = 1.5   # Weight for the turning cost
-
         # Avoid crashing when near the end of the path
         end_index = closest_index + horizon 
         if end_index <= len(self.path):
@@ -141,7 +146,7 @@ class Controller:
             # Calculate the distance from the cart state to the reference path point
             distance = (cart_state_i[0] - ref_path[i][0]) ** 2 + (cart_state_i[1] - ref_path[i][1]) ** 2
             turning = inputs[1] ** 2
-            total_cost += K_dist * distance + K_turn * turning
+            total_cost += self.K_dist * distance + self.K_turn * turning
 
             current_state = state_i
 
@@ -180,13 +185,12 @@ class Controller:
 
 
         # ---- MODEL PREDICTIVE CONTROL ----
-        horizon = 10
-        w_guess = np.full(horizon, self.last_w)
+        w_guess = np.full(self.horizon, self.last_w)
         # Bounds for the control inputs
-        bounds = [(-np.deg2rad(45), np.deg2rad(45))] * horizon
+        bounds = [(-np.deg2rad(45), np.deg2rad(45))] * self.horizon
 
         res = minimize(
-            lambda u: self.cost(state, u, min_index, horizon),
+            lambda u: self.cost(state, u, min_index, self.horizon),
             w_guess,
             method='SLSQP',
             bounds=bounds,

@@ -1,4 +1,6 @@
 import numpy as np
+import yaml
+import time
 import geometry_solver, control
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -7,26 +9,41 @@ from matplotlib.widgets import Slider, Button, RadioButtons
 
 class Simulation():
 
-    def __init__(self, initial_state = [0, 0, 0], target = -1):
+    def __init__(self, config_path):
         '''
         Parameters:
         - initial_state: list of 3 elements [x, y, theta] with theta in degrees
         - target: list of 2 elements [x_target, y_target] or -1 for no target 
         '''
 
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+
         # Initial parameters
-        self.state = np.array([initial_state[0], initial_state[1], initial_state[2], 0.0])
-        self.target = target
-        self.cart_width = 0.5
-        self.cart_length = 0.3
-        self.simulation_running = True
-        self.geometry_solver = geometry_solver.GeometrySolver()
-        self.control = control.Controller(self.state, self.target, dt=0.05)
+        raw_state = config['physics']['initial_state']
+        self.state = np.array([raw_state[0], raw_state[1], np.deg2rad(raw_state[2]), 0.0])  
+        self.target = config['physics']['target']
+        self.turning_radius = config['physics']['turning_radius']
+
+        # Extract physics and cart specs from the dictionary
+        cart_specs = config['cart_dimensions']
+        self.cart_width = cart_specs['width']
+        self.cart_length = cart_specs['length']
+
+        # Initialize the other classes required for the simulation
+        self.geometry_solver = geometry_solver.GeometrySolver(state=self.state, target=self.target, turning_radius=self.turning_radius)
+        self.control = control.Controller(
+            initial_state = self.state, 
+            target = self.target, 
+            geometry_solver = self.geometry_solver, 
+            configs = config
+        )
 
         # Assume the cart starts aligned with the robot
         self.hitch_angle = 0.0
         self.cart_state = self.control.cart_model(self.state)
 
+        self.simulation_running = True
         self.x_history = []
         self.y_history = []
         self.cart_x_history = []
@@ -57,7 +74,7 @@ class Simulation():
         plt.style.use('dark_background')
         
         # Start graph 
-        self.fig = plt.figure(figsize=(15, 10))
+        self.fig = plt.figure(figsize=(10, 6))
         gs = self.fig.add_gridspec(2, 2, width_ratios=[2, 1], height_ratios=[1, 1], 
                                hspace=0.3, wspace=0.3, bottom=0.15)
 
@@ -210,7 +227,7 @@ class Simulation():
         '''
         Plots the geometry of the path planning for debugging purposes
         '''
-        graphic_helpers, control_helpers, overshoot_case = self.geometry_solver.calculate_path_geometry(self.state, self.target, r = 3.5)
+        graphic_helpers, control_helpers, overshoot_case = self.geometry_solver.calculate_path_geometry()
 
         if overshoot_case:
             # The robot is after the entry point
@@ -323,4 +340,4 @@ class Simulation():
 
 #teste = Simulation([1.0, 3.0, np.deg2rad(45)], target=[0, 0]) # With r of 0.5
 
-teste = Simulation([0.7, 8.0, np.deg2rad(45)], target=[0.0, 0.0]) # Initial state: [x, y, theta]
+#teste = Simulation([0.7, 8.0, np.deg2rad(45)], target=[0.0, 0.0]) # Initial state: [x, y, theta]
