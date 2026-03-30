@@ -288,6 +288,11 @@ class Simulation():
             # -------- For debugging of kinematics --------
             vx = -0.2
             w = 0.3
+            if self.current_time < 5.0:
+                w = 0.3 
+            else:
+                w = -0.3
+            #w = 0.0
 
             new_state = self.control.robot_model(self.state, [vx, w])
             new_cart_state = self.control.cart_model(new_state)
@@ -296,7 +301,7 @@ class Simulation():
             self.heading_error_history.append(np.rad2deg(new_state[2]))
 
 
-            print(f"State: {np.rad2deg(new_state[3])} \n Cart State: {np.rad2deg(new_cart_state[2])} \n")
+            print(f"Inside physics model\nNew hitch angle: {np.rad2deg(new_state[3])} \nNew cart heading: {np.rad2deg(new_cart_state[2])} \n")
             
             # Update the shared state with locking to prevent
             with self.lock:

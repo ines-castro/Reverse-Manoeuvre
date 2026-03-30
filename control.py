@@ -55,26 +55,6 @@ class Controller:
 
         self.last_w = 0.0  # Store the last angular velocity for smoothing
         self.prev_hitch_error = 0.0
-
-    def robot_kinematics(self, vx, w, theta, hitch_angle):
-        '''
-        Calculates the state of the cart based on the robot' state
-        Args: 
-            vx: Linear velocity of the robot
-            w: Angular velocity of the robot
-            theta: Heading angle of the robot
-            hitch_angle: Angle between the robot and the cart
-        '''
-        dx = vx * np.cos(theta)
-        dy = vx * np.sin(theta)
-        dtheta = w
-        
-        # Cart Kinematics
-        w_cart = (vx / self.cart_wheelbase) * np.sin(hitch_angle)
-
-        d_hitch = w_cart - w
-            
-        return [dx, dy, dtheta, d_hitch]
     
     def robot_model(self, state, inputs):
         '''
@@ -92,9 +72,8 @@ class Controller:
 
         # Cart Kinematics
         w_cart = (vx / self.cart_wheelbase) * np.sin(gamma)
-        w_cart = (vx * np.sin(gamma) - self.gripper_length * w * np.cos(gamma)) / self.fixed_wheel_dist
-
-        d_hitch = w_cart - w
+        
+        d_hitch = - w_cart - w
 
         x_next = x + dx * self.dt
         y_next = y + dy * self.dt
@@ -113,7 +92,7 @@ class Controller:
         hitch_x = state[0] - self.gripper_length * np.cos(state[2])
         hitch_y = state[1] - self.gripper_length * np.sin(state[2])
 
-        print(f"Hitch angle: {np.rad2deg(state[3])}° Cart heading: {np.rad2deg(state[2])}°")
+        print(f"Inside cart model \nHitch angle: {np.rad2deg(state[3])}° Cart heading: {np.rad2deg(state[2])}°")
         cart_heading = state[2] + state[3] # hitch angle = cart heading - robot heading
         cart_x = hitch_x - self.fixed_wheel_dist * np.cos(cart_heading)
         cart_y = hitch_y - self.fixed_wheel_dist * np.sin(cart_heading)
