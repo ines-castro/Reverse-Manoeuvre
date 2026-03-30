@@ -13,20 +13,25 @@ class GeometrySolver:
         '''
         Calculate the geometry of the path in all stages of reverse maneuver
         '''
-        # Where the robot is currently aiming
-        m_heading = np.tan(math.pi/2 - self.state[2])
+        # Heading unit vector
+        vec_h = np.array([np.cos(self.state[2]), np.sin(self.state[2])])
+        vec_prep = np.array([-np.sin(self.state[2]), np.cos(self.state[2])])  
+        
+        m_heading = np.tan(self.state[2])
         b_heading = self.state[1] - m_heading * self.state[0]
 
-        # ---- Mandatory turning circle ----
+        # -------- Mandatory turning circle --------
         circle_radius = self.r
         vertex, circle_center, _ = self.get_tangent_circle(m_heading, b_heading, float('inf'), self.target[0], self.state[:2], self.target, circle_radius)
+
+        print(">>>>>>>>>>>>>>>>>>>>>")
 
         # Calculate both tangent points to the circle
         tangent_heading, _ = self.get_intersection_line_circle(m_heading, b_heading, circle_center, circle_radius)
         tangent_target, _ = self.get_intersection_line_circle(float('inf'), self.target[0], circle_center, circle_radius)
         tangent_points = [tangent_heading, tangent_target]
 
-        # ---- Overshoot logic ----
+        # -------- Overshoot logic --------
         heading_vector = np.array([np.cos(self.state[2]), np.sin(self.state[2])])
         offset_vector = self.state[:2] - tangent_points[0]
        
@@ -186,6 +191,7 @@ class GeometrySolver:
          - Line 2: y = m2 * x + b2
         '''
 
+        # Intersection 
         # Intersection between the two lines
         vertex = self.get_intersection_lines(m1, b1, m2, b2)
 
@@ -206,7 +212,6 @@ class GeometrySolver:
             # If radius is not provided, we assume it is supposed to touch A and B
             h = np.linalg.norm(vertex - A)
             circle_radius = np.tan(half_angle) * h
-            print(f"Calculated radius: {circle_radius}")
         else:
             circle_radius = radius
 
@@ -245,8 +250,6 @@ class GeometrySolver:
                 intersection = [float('inf'), float('inf')]
             else:
                 intersection = np.linalg.solve(A, B)
-
-            print(f"Intersection of lines: {intersection}")
         
         return intersection
     
@@ -263,6 +266,10 @@ class GeometrySolver:
             # Vertical line case: x = b
             x = b
             dx = abs(x - center[0])
+
+            # Handle floating point precision issues
+            if abs(dx - radius) < 1e-9:
+                dx = radius
 
             # Case 1: No intersection points
             if dx > radius:
@@ -284,6 +291,10 @@ class GeometrySolver:
         C = center[0]**2 + center[1]**2  + b**2 - 2 * b * center[1] - radius**2
 
         discriminant = B**2 - 4 * A * C
+
+        # Handle floating point precision issues
+        if abs(discriminant) < 1e-9:
+            discriminant = 0.0
 
         if discriminant < 0:
             print("No intersection between line and circle.")
