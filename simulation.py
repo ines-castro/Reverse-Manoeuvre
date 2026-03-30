@@ -25,7 +25,7 @@ class Simulation():
 
         # Initial parameters
         raw_state = config['physics']['initial_state']
-        self.state = np.array([raw_state[0], raw_state[1], np.deg2rad(raw_state[2]), np.deg2rad(30)])  # Convert angles to radians
+        self.state = np.array([raw_state[0], raw_state[1], np.deg2rad(raw_state[2]), np.deg2rad(raw_state[3])])  # Convert angles to radians
         self.target = config['physics']['target']
         self.turning_radius = config['physics']['turning_radius']
 
@@ -48,7 +48,7 @@ class Simulation():
         self.x_history, self.y_history = [], []
         self.cart_history_patches = []
         self.cart_x_history, self.cart_y_history = [], []
-        self.cross_error_history, self.heading_error_history = [], []
+        self.cross_error_history, self.hitch_error_history = [], []
         self.time_history = []
         self.dt = config['physics']['dt']
         self.current_time = 0.0
@@ -133,12 +133,12 @@ class Simulation():
         
 
         # ---- Mini Bottom Plot: Heading Error ----
-        self.ax_heading_error = self.fig.add_subplot(gs[1, 1])
-        self.ax_heading_error.set_title("Heading Error", fontweight='bold')
-        self.ax_heading_error.set_xlabel("Time [s]")
-        self.ax_heading_error.set_ylabel("Error [deg]")
-        self.ax_heading_error.grid(True, which='both', linewidth=0.5, color='gray')
-        self.line_heading, = self.ax_heading_error.plot([], [], color = "#FFEE8C", linestyle= '--',linewidth=1.2, label='Path')
+        self.ax_hitch = self.fig.add_subplot(gs[1, 1])
+        self.ax_hitch.set_title("Hitch Angle", fontweight='bold')
+        self.ax_hitch.set_xlabel("Time [s]")
+        self.ax_hitch.set_ylabel("Angle [deg]")
+        self.ax_hitch.grid(True, which='both', linewidth=0.5, color='gray')
+        self.line_hitch, = self.ax_hitch.plot([], [], color = "#FFEE8C", linestyle= '--',linewidth=1.2, label='Path')
         
 
     def add_widgets(self):
@@ -224,12 +224,12 @@ class Simulation():
             self.debug_mode = False
             # Hide the sliders, the velocities come from control algorithms
             self.ax_cross_error.set_visible(False)
-            self.ax_heading_error.set_visible(False)
+            self.ax_hitch.set_visible(False)
 
         elif label == 'Debug':
             self.debug_mode = True
             self.ax_cross_error.set_visible(True)
-            self.ax_heading_error.set_visible(True)
+            self.ax_hitch.set_visible(True)
 
         self.fig.canvas.draw_idle()
 
@@ -278,30 +278,11 @@ class Simulation():
         '''
         High frequency backgroud thread for mathematics
         '''
-        print(f"First state: {np.rad2deg(self.state[3])}")
+
         while self.simulation_running:
             start_tick = time.time()
-            #new_state, new_cart_state, vx, w, e_cross, e_heading, finished = \
-            #    self.control.path_following(self.state, self.target)
-
-
-            # -------- For debugging of kinematics --------
-            vx = -0.2
-            w = 0.3
-            if self.current_time < 5.0:
-                w = 0.3 
-            else:
-                w = -0.3
-            #w = 0.0
-
-            new_state = self.control.robot_model(self.state, [vx, w])
-            new_cart_state = self.control.cart_model(new_state)
-            self.time_history.append(self.current_time)
-            self.cross_error_history.append(np.rad2deg(new_state[3]))
-            self.heading_error_history.append(np.rad2deg(new_state[2]))
-
-
-            print(f"Inside physics model\nNew hitch angle: {np.rad2deg(new_state[3])} \nNew cart heading: {np.rad2deg(new_cart_state[2])} \n")
+            new_state, new_cart_state, vx, w, e_cross, finished = \
+               self.control.path_following(self.state, self.target)
             
             # Update the shared state with locking to prevent
             with self.lock:
@@ -312,18 +293,18 @@ class Simulation():
 
                 # Update histories                
                 self.current_time += self.dt
-                #self.time_history.append(self.current_time)
+                self.time_history.append(self.current_time)
                 self.x_history.append(self.state[0])
                 self.y_history.append(self.state[1])
                 self.cart_x_history.append(self.cart_state[0])
                 self.cart_y_history.append(self.cart_state[1])
-                #self.cross_error_history.append(e_cross)
-                #self.heading_error_history.append(e_heading)
+                self.cross_error_history.append(e_cross)
+                self.hitch_error_history.append(np.rad2deg(self.state[3]))
 
-                #if finished:
-                #    self.simulation_running = False
-                #    print("--- Physics Engine shutting down. ---")
-                #    break
+                if finished:
+                   self.simulation_running = False
+                   print("--- Physics Engine shutting down. ---")
+                   break
             
             # How long the computer took to do the math
             elapsed = time.time() - start_tick
@@ -343,7 +324,7 @@ class Simulation():
 
                 if self.debug_mode: 
                     self.plot_cross_track_error(self.cross_error_history[-1])
-                    self.plot_heading_error(self.heading_error_history[-1])
+                    self.plot_hitch_angle(self.hitch_error_history[-1])
 
             # How often my screen updates
             plt.pause(0.01)
@@ -398,9 +379,9 @@ class Simulation():
         self.ax_cross_error.relim()
         self.ax_cross_error.autoscale_view()
 
-    def plot_heading_error(self, error: float):
-        self.line_heading.set_data(self.time_history, self.heading_error_history)
+    def plot_hitch_angle(self, error: float):
+        self.line_hitch.set_data(self.time_history, self.hitch_error_history)
         self.fig.canvas.draw()
-        self.ax_heading_error.relim()
-        self.ax_heading_error.autoscale_view()
+        self.ax_hitch.relim()
+        self.ax_hitch.autoscale_view()
 
