@@ -6,11 +6,11 @@ physics:
 
 controller:
   constant_vx: -0.1
-  K_dist: 43.75           # Weight for the distance cost
-  K_turn: 9.67             # Weight for the turning cost
-  K_hitch: 12.95          # Weight for the hitch angle cost
+  K_dist: 48.15           # Weight for the distance cost
+  K_turn: 7.97             # Weight for the turning cost
+  K_hitch: 17.93          # Weight for the hitch angle cost
   horizon: 10
-  lookahead_distance: 1
+  lookahead_distance: 0.35
 
 cart_dimensions:
   width: 0.7

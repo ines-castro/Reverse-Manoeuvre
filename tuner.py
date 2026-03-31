@@ -18,7 +18,7 @@ def objective(trial):
             'K_dist': trial.suggest_float("K_dist", 0.1, 50.0), 
             'K_turn': trial.suggest_float("K_turn", 0.01, 10.0), 
             'K_hitch': trial.suggest_float("K_hitch", 0.1, 50.0), 
-            'lookahead_distance': 1, #trial.suggest_float("lookahead_distance", 0.1, 2.0), 
+            'lookahead_distance': trial.suggest_float("lookahead_distance", 0.1, 2.0), 
             'horizon': 10, #trial.suggest_int("horizon", 5, 40)
         },
         'cart_dimensions': {
@@ -38,16 +38,23 @@ def objective(trial):
 
     evaluation_score = 0
     for step in range(1000):
-        state, _, _, _, e_cross, finished = ctrl.path_following(state, target)
+        state, cart_state, _, _, e_cross, finished = ctrl.path_following(state, target)
         
-        # Penalize cross-track error and excessive hitching
-        evaluation_score += e_cross**2 + (abs(state[3]) * 2)
+        # Penalize cross-track error 
+        evaluation_score += e_cross**2
+
+        # Penalize hitch angle more heavily as it approaches the limit
+        dist_to_target = np.linalg.norm(cart_state[:2] - np.array(target))
+        if dist_to_target < 4:
+            evaluation_score += (abs(state[3]) * 30) 
+        else:
+            evaluation_score += (abs(state[3]) * 2)
         
         # Stop if it reaches the target
         if finished: break
 
         # Only fail if it's really far away or completely jackknifed
-        if e_cross > 10.0 or abs(np.rad2deg(state[3])) > (configs['cart_dimensions']['gripper_angle_limit'] + 5):
+        if e_cross > 10.0 or abs(state[3]) > np.deg2rad(37):
             return 50000000
     
     # It has to reach the target
@@ -55,13 +62,13 @@ def objective(trial):
         print(" ✖ This trial did not reach the target")
         return 1000000000
 
-    return evaluation_score
+    return evaluation_score + abs(state[3])* 20
 
 study = optuna.create_study(study_name='controller-tunning')
 
 # graphiic display for hyperparameter importance
-study.optimize(objective, n_trials=800)
+study.optimize(objective, n_trials=300)
 
-print("--- Best parameters ---")
+print("---- Best parameters ----")
 for key, value in study.best_params.items():
     print(f"{key}: {value}")
