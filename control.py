@@ -50,7 +50,7 @@ class Controller:
 
         # Save to csv for debugging purposes
         df = pd.DataFrame(path_points, columns=['x', 'y'])
-        df.to_csv('coco.csv', index=False)
+        df.to_csv('path_points.csv', index=False)
 
         # Use it as reference for the path planning
         self.path = np.array(path_points)
@@ -104,8 +104,8 @@ class Controller:
         cart_state = [cart_x, cart_y, cart_heading]
 
         return cart_state
-        
-    def cost(self, state, w_seq, closest_index, horizon):
+
+    def cost(self, state, w_seq, closest_index, local_target, horizon):
         '''
         Drives the optimisation process by quantifying the error between the current state
         and the the desired trajectory.
@@ -121,6 +121,9 @@ class Controller:
             padding = np.repeat(self.path[-1][None, :], pad_length, axis=0)
             ref_path = np.vstack((self.path[closest_index:], padding))
 
+
+        # ---- MODEL PREDICTIVE CONTROL ----
+
         total_cost = 0.0
         for i in range(horizon):
 
@@ -131,6 +134,17 @@ class Controller:
             # Calculate the cart state at the next time step
             state_i = self.robot_model(current_state, inputs)
             cart_state_i = self.cart_model(state_i)
+
+            # Heading error related to the tangent of the reference path
+            if i + 1 < len(ref_path):
+                desired_heading = np.arctan2(ref_path[i+1][1] - ref_path[i][1],
+                                            ref_path[i+1][0] - ref_path[i][0])
+            else:
+                desired_heading = np.arctan2(ref_path[-1][1] - ref_path[-2][1],
+                                            ref_path[-1][0] - ref_path[-2][0])
+
+            heading_error = np.arctan2(np.sin(cart_state_i[2] - desired_heading),
+                                        np.cos(cart_state_i[2] - desired_heading))
             
             # Distance from the cart state to the reference path point
             distance = (cart_state_i[0] - ref_path[i][0]) ** 2 + (cart_state_i[1] - ref_path[i][1]) ** 2
@@ -139,38 +153,27 @@ class Controller:
             turning = inputs[1] ** 2
 
             # Hitch angle cost to avoid reaching the hitting mechanical limit
-            hitch = (np.exp(abs(state_i[3]) / self.gripper_angle_limit * 5) - 1)
+            hitch = abs(state_i[3]) / self.gripper_angle_limit
 
             if i == 0:
                 delta_w = (w_seq[i] - self.last_w)**2
             else:
                 delta_w = (w_seq[i] - w_seq[i-1])**2
 
+            total_cost += self.K_dist * distance + \
+                self.K_turn * turning + \
+                self.K_hitch * hitch + \
+                1 * heading_error**2 
 
-            total_cost += self.K_dist * distance + self.K_turn * delta_w + self.K_hitch * hitch
-
-            dist_to_end = np.linalg.norm(cart_state_i[:2] - self.path[-1])
-            if dist_to_end < 2.0:
-                # This multiplier grows exponentially as dist_to_end -> 0
-                finish_logic_weight = np.exp(2.0 - dist_to_end) 
-                total_cost += finish_logic_weight * (state_i[3]**2)
+            # dist_to_end = np.linalg.norm(cart_state_i[:2] - self.path[-1])
+            # if dist_to_end < 2.0:
+            #     # This multiplier grows exponentially as dist_to_end -> 0
+            #     finish_logic_weight = np.exp(2.0 - dist_to_end) 
+            #     total_cost += finish_logic_weight * (state_i[3]**2)
 
             current_state = state_i
 
         return total_cost
-
-    def hitch_constraint(self, u, state):
-        """
-        Ensures the predicted hitch angle never exceeds its mechanical limit.
-        Returns >=0 if feasible.
-        """
-        current_state = np.array(state).copy()
-        min_margin = float('inf')
-        for w in u:
-            current_state = self.robot_model(current_state, [self.constant_vx, w])
-            margin = self.gripper_angle_limit - abs(current_state[3])
-            min_margin = min(min_margin, margin)
-        return min_margin  # >= 0 means all steps are feasible
 
     def path_following(self, state, target):
         '''
@@ -201,19 +204,14 @@ class Controller:
                 local_target = self.path[i]
                 break
 
-        # ---- MODEL PREDICTIVE CONTROL ----
-        #w_guess = np.full(self.horizon, self.last_w)
-        w_guess = np.zeros(self.horizon)
+        w_guess = np.full(self.horizon, self.last_w)
+        #w_guess = np.zeros(self.horizon)
         #  Bounds for the control inputs
         bounds = [(-np.deg2rad(45), np.deg2rad(45))] * self.horizon
-        constraint = {
-            'type': 'ineq',  # inequality: must be >=0
-            'fun': lambda u: self.hitch_constraint(u, state)
-        }
 
         try:
             res = minimize(
-                lambda u: self.cost(state, u, min_index, self.horizon),
+                lambda u: self.cost(state, u, min_index, local_target, self.horizon),
                 w_guess,
                 method='SLSQP',
                 bounds=bounds,
