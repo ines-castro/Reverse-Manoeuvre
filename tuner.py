@@ -41,20 +41,22 @@ def objective(trial):
         state, cart_state, _, _, e_cross, finished = ctrl.path_following(state, target)
         
         # Penalize cross-track error 
-        evaluation_score += e_cross**2
+        #evaluation_score += e_cross**2
 
         # Penalize hitch angle more heavily as it approaches the limit
         dist_to_target = np.linalg.norm(cart_state[:2] - np.array(target))
         if dist_to_target < 4:
             evaluation_score += (abs(state[3]) * 30) 
+            evaluation_score += e_cross**2 * 20
         else:
             evaluation_score += (abs(state[3]) * 2)
+            evaluation_score += e_cross**2 * 10
         
         # Stop if it reaches the target
         if finished: break
 
         # Only fail if it's really far away or completely jackknifed
-        if e_cross > 10.0 or abs(state[3]) > np.deg2rad(37):
+        if e_cross > 5.0 or abs(state[3]) > np.deg2rad(37):
             return 50000000
     
     # It has to reach the target
@@ -62,12 +64,14 @@ def objective(trial):
         print(" ✖ This trial did not reach the target")
         return 1000000000
 
-    return evaluation_score + abs(state[3])* 20
+    print(" ✔ This trial reached the target")
+
+    return evaluation_score
 
 study = optuna.create_study(study_name='controller-tunning')
 
 # graphiic display for hyperparameter importance
-study.optimize(objective, n_trials=300)
+study.optimize(objective, n_trials=500)
 
 print("---- Best parameters ----")
 for key, value in study.best_params.items():
