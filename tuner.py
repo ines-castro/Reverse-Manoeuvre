@@ -28,10 +28,12 @@ def objective(trial):
             'gripper_angle_limit': configs['cart_dimensions']['gripper_angle_limit']
         }
     }
+
+    initial_angle = trial.suggest_float("initial_angle", -np.pi, np.pi)
     
     # Initial setup
     raw_state = configs['physics']['initial_state']
-    state = np.array([raw_state[0], raw_state[1], np.deg2rad(raw_state[2]), np.deg2rad(raw_state[3])])  
+    state = np.array([raw_state[0], raw_state[1], np.deg2rad(raw_state[2]), initial_angle])  
     target = configs['physics']['target']
     solver = GeometrySolver(state, target, turning_radius=configs['physics']['turning_radius'])
     ctrl = Controller(state, target, solver, parameters)
