@@ -17,6 +17,7 @@ The resulting geometry is converted into a discrete set of coordinates $(x,y)$ u
 
 ### Controller
 Implements a kinematic model of the robot-cart system. The robot state is defined as 
+
 $$state = [x_{robot}, y_{robot}, \theta_{heading}, \gamma_{hitch}]$$
 
 and it can be controlled with its linear velocity ($v_x$) and angular velocity ($\omega$). However in this simulation, the controller maintains a constant backing $v_x$ focusing only on optimising $\omega$.
