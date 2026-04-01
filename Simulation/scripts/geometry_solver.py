@@ -1,30 +1,32 @@
-import math
 import numpy as np
 
 class GeometrySolver:
+    """
+    Calculates feasible trajectories for reverse maneuvers.
+    
+    Handles both standard and overshoot cases where the robot's initial pose
+    is past the primary turning circle's entry point.
+    """
 
     def __init__(self, state, target, turning_radius):
-        self.debug = True
         self.state = state
         self.target = target
         self.r = turning_radius
 
     def calculate_path_geometry(self):
-        '''
-        Calculate the geometry of the path in all stages of reverse maneuver
-        '''
-        # Heading unit vector
-        vec_h = np.array([np.cos(self.state[2]), np.sin(self.state[2])])
-        vec_prep = np.array([-np.sin(self.state[2]), np.cos(self.state[2])])  
+        """
+        Calculate the geometry of the path in all stages of reverse maneuver.
         
+        Returns:
+            Tuple of (graphic_helpers, control_helpers, overshoot_case)
+        """
+        # Heading vector and line equation
         m_heading = np.tan(self.state[2])
         b_heading = self.state[1] - m_heading * self.state[0]
 
         # -------- Mandatory turning circle --------
         circle_radius = self.r
         vertex, circle_center, _ = self.get_tangent_circle(m_heading, b_heading, float('inf'), self.target[0], self.state[:2], self.target, circle_radius)
-
-        print(">>>>>>>>>>>>>>>>>>>>>")
 
         # Calculate both tangent points to the circle
         tangent_heading, _ = self.get_intersection_line_circle(m_heading, b_heading, circle_center, circle_radius)
@@ -87,21 +89,23 @@ class GeometrySolver:
         return graphic_helpers, control_helpers, overshoot_case
 
     def path(self, s: float, waypoints: dict, centers: list, radius: float, overshoot_case: bool) -> np.array:
-        '''
-        Parameterize the path with respect to the distance traveled along.
+        """
+        Parameterize the path with respect to distance traveled.
+        
         Args: 
-            s: total distance traveled along the path
-            waypoints: points that define the path 
-                - initial: where the robot starts (if overshoot case, it is the point where the robot starts turning)
-                - turning: where the robot changes circle or starts turning if no overshoot
-                - exit: where the robot stops turning and heads straight to the target 
-                - target: where the robot wants to go
-            centers : list of centers of the turning circles (2 if overshoot case, 1 otherwise)
+            s: Total distance traveled along the path
+            waypoints: Dictionary of path defining points:
+                - initial: Robot starting position (or turning start if overshoot)
+                - turning: Circle change point or start of turning if no overshoot
+                - exit: Where robot stops turning and heads straight to target
+                - target: Destination position
+            centers: List of turning circle centers (2 if overshoot, 1 otherwise)
+            radius: Turning circle radius
+            overshoot_case: Whether overshoot logic is active
         
         Returns:
-            The point on the path corresponding to the distance s.
-
-        '''
+            Point on path corresponding to distance s
+        """
 
         if overshoot_case:
             distance_to_turn = 0.0 
@@ -176,23 +180,27 @@ class GeometrySolver:
     # AUXILIARY FUNCTIONS
     # ---------------------------------------------------------
     def angle_diff(self, a, b):
-        '''
-        Calculates the difference between two angles.
-        Normalizes it to be between -pi and pi.
-        '''
+        """
+        Calculate normalized angle difference.
+        
+        Returns difference between two angles normalized to [-π, π].
+        """
         d = b - a
         return (d + np.pi) % (2 * np.pi) - np.pi
 
-    def get_tangent_circle(self, m1, b1, m2, b2, A, B, radius = None):
-        '''
-        Calculate the center of a circle that is tangent to two lines 
-        and which direction is defined by A and B.
-         - Line 1: y = m1 * x + b1
-         - Line 2: y = m2 * x + b2
-        '''
-
-        # Intersection 
-        # Intersection between the two lines
+    def get_tangent_circle(self, m1, b1, m2, b2, A, B, radius=None):
+        """
+        Calculate center of circle tangent to two lines.
+        
+        Args:
+            m1, b1: Slope and intercept of line 1 (y = m1*x + b1)
+            m2, b2: Slope and intercept of line 2 (y = m2*x + b2)
+            A, B: Points defining direction for circle placement
+            radius: Circle radius (if None, calculated to touch A and B)
+            
+        Returns:
+            Tuple of (vertex, circle_center, circle_radius)
+        """
         vertex = self.get_intersection_lines(m1, b1, m2, b2)
 
         # Direction vector for the lines
@@ -224,11 +232,16 @@ class GeometrySolver:
         return vertex, circle_center, circle_radius
     
     def get_intersection_lines(self, m1, b1, m2, b2):
-        '''
-        Calculates the intersection point between two lines, given the slopes and intercepts of the lines.
-         - Line 1: y = m1 * x + b1
-         - Line 2: y = m2 * x + b2
-        '''
+        """
+        Calculate intersection point between two lines.
+        
+        Args:
+            m1, b1: Slope and intercept of line 1
+            m2, b2: Slope and intercept of line 2
+            
+        Returns:
+            Intersection point [x, y] or [inf, inf] if parallel
+        """
         # Both lines are vertical and parallel, no intersection
         if m1 == float('inf') and m2 == float('inf'):
             intersection = [float('inf'), float('inf')]
@@ -254,14 +267,18 @@ class GeometrySolver:
         return intersection
     
     def get_intersection_line_circle(self, m, b, center, radius):
-        '''
-        Calculates the intersection points between a line and a circle.
-         - Line: 
-            normal: y = m * x + b
-            horizontal: m = 0 => y = b
-            vertical: m = inf => x = b
-         - Circle: (x - cx)^2 + (y - cy)^2 = r^2
-        '''
+        """
+        Calculate intersection points between a line and circle.
+        
+        Args:
+            m: Line slope (use float('inf') for vertical lines)
+            b: Line intercept (x-value if vertical, y-value otherwise)
+            center: Circle center [x, y]
+            radius: Circle radius
+            
+        Returns:
+            Tuple of intersection points or (None, None) if no intersection
+        """
         if m == float('inf'):
             # Vertical line case: x = b
             x = b
@@ -314,13 +331,17 @@ class GeometrySolver:
             return [x1, y1], [x2, y2]
         
     def get_reflected_point(self, point, m, b):
-        '''
-        Reflects the point across the line defined by m and b.
-         - Line:
-            normal: y = m * x + b
-            horizontal: m = 0 => y = b
-            vertical: m = inf => x = b
-        '''
+        """
+        Reflect a point across a line.
+        
+        Args:
+            point: Point to reflect [x, y]
+            m: Line slope (use float('inf') for vertical, 0 for horizontal)
+            b: Line intercept
+            
+        Returns:
+            Reflected point [x, y]
+        """
         
         if m == float('inf'):
             # Vertical line case: x = b
