@@ -2,6 +2,8 @@
 
 This project provides an automated control solution for a differential robot tasked with parking a cart in space-constrained environments, where forward movement is not possible.
 
+To run the simulation: `python main.py --config configs/overshoot.yaml`
+
 ## Architecture
 
 The code can be divided into three main componentes:
@@ -47,6 +49,8 @@ The plot includes:
 - **Live Telemetry**: Synchronized plots for Cross-Track Error and Hitch Angle to monitor stability.
 - **Debug Overlays**: Geometry Solver's internal logic, including circle that define the turning.
 - **Interactive UI**: Stop trigger and radio toggles to switch between standard control and debug visualization modes.
+
+
 
 ## Results
 
