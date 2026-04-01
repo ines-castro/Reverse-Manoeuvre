@@ -1,13 +1,26 @@
 import numpy as np
 import pandas as pd
-import yaml
-import scipy
-import geometry_solver
 from scipy.optimize import minimize
 
 class Controller:
+    """
+    Model Predictive Controller for reverse maneuver navigation.
+    
+    Implements MPC with kinematic model to optimize angular velocity while
+    maintaining constant linear velocity, minimizing cross-track error,
+    hitch angle, and steering effort.
+    """
 
     def __init__(self, initial_state, target, geometry_solver, configs: dict):
+        """
+        Initialize controller with configuration parameters.
+        
+        Args:
+            initial_state: Initial robot state [x, y, theta, hitch_angle]
+            target: Target position [x, y]
+            geometry_solver: GeometrySolver instance for path calculation
+            configs: Dictionary containing physics, controller, and cart configuration
+        """
         
         self.dt = configs['physics']['dt']
 
@@ -22,7 +35,7 @@ class Controller:
 
         # Load cart dimensions
         cart_specs = configs['cart_dimensions']
-        self.cart_width = cart_specs['width']
+
         self.fixed_wheel_dist = cart_specs['fixed_wheel_dist']
         self.gripper_length = cart_specs['gripper_length']
         self.gripper_angle_limit = np.deg2rad(cart_specs['gripper_angle_limit'])
@@ -48,23 +61,26 @@ class Controller:
             pt = geometry_solver.path(s, waypoints, circles_centers, graphic_helpers['circle_radius'], overshoot_case)
             path_points.append([pt[0], pt[1]])
 
-        # Save to csv for debugging purposes
+        # Save to CSV for debugging purposes
         df = pd.DataFrame(path_points, columns=['x', 'y'])
         df.to_csv('path_points.csv', index=False)
 
         # Use it as reference for the path planning
         self.path = np.array(path_points)
 
-        self.last_w = 0.0  # Store the last angular velocity for smoothing
-        self.prev_hitch_error = 0.0
+        self.last_w = 0.0  # Store last angular velocity for warm-starting optimization
     
     def robot_model(self, state, inputs):
-        '''
-        Simple kinematic model of the cart
+        """
+        Kinematic model for robot-cart system state propagation.
+        
         Args:
-            state: State of the robot [x, y, theta, hitch_angle]
+            state: Robot state [x, y, theta, hitch_angle]
             inputs: Control inputs [vx, w]
-        '''
+            
+        Returns:
+            Next state after applying inputs for one time step
+        """
         x, y, theta, gamma = state
         vx, w = inputs
 
@@ -90,9 +106,15 @@ class Controller:
         return state_next
     
     def cart_model(self, state):
-        '''
-        Calculate the position and heading of the cart based on the robot's state
-        '''
+        """
+        Calculate cart position and heading from robot state.
+        
+        Args:
+            state: Robot state [x, y, theta, hitch_angle]
+            
+        Returns:
+            Cart state [x, y, heading]
+        """
         # Hitch point at the back of the robot
         hitch_x = state[0] - self.gripper_length * np.cos(state[2])
         hitch_y = state[1] - self.gripper_length * np.sin(state[2])
@@ -106,13 +128,25 @@ class Controller:
         return cart_state
 
     def cost(self, state, w_seq, closest_index, local_target, horizon):
-        '''
-        Drives the optimisation process by quantifying the error between the current state
-        and the the desired trajectory.
-        '''
+        """
+        MPC cost function for trajectory optimization.
+        
+        Computes multi-objective cost balancing distance to path, steering effort,
+        and hitch angle over the prediction horizon.
+        
+        Args:
+            state: Current robot state
+            w_seq: Sequence of angular velocities to evaluate
+            closest_index: Index of closest point on reference path
+            local_target: Lookahead target point
+            horizon: Prediction horizon length
+            
+        Returns:
+            Total cost for the given control sequence
+        """
         current_state = np.array(state).copy()
 
-        # Avoid crashing when near the end of the path
+        # Handle path end by padding with final point
         end_index = closest_index + horizon 
         if end_index <= len(self.path):
             ref_path = self.path[closest_index:end_index]   
@@ -120,9 +154,6 @@ class Controller:
             pad_length = end_index - len(self.path)
             padding = np.repeat(self.path[-1][None, :], pad_length, axis=0)
             ref_path = np.vstack((self.path[closest_index:], padding))
-
-
-        # ---- MODEL PREDICTIVE CONTROL ----
 
         total_cost = 0.0
         for i in range(horizon):
@@ -155,31 +186,26 @@ class Controller:
             # Hitch angle cost to avoid reaching the hitting mechanical limit
             hitch = abs(state_i[3]) / self.gripper_angle_limit
 
-            if i == 0:
-                delta_w = (w_seq[i] - self.last_w)**2
-            else:
-                delta_w = (w_seq[i] - w_seq[i-1])**2
-
             total_cost += self.K_dist * distance + \
                 self.K_turn * turning + \
                 self.K_hitch * hitch + \
                 1 * heading_error**2 
-
-            # dist_to_end = np.linalg.norm(cart_state_i[:2] - self.path[-1])
-            # if dist_to_end < 2.0:
-            #     # This multiplier grows exponentially as dist_to_end -> 0
-            #     finish_logic_weight = np.exp(2.0 - dist_to_end) 
-            #     total_cost += finish_logic_weight * (state_i[3]**2)
 
             current_state = state_i
 
         return total_cost
 
     def path_following(self, state, target):
-        '''
-        Path planning mode where the robot calculates the velocities needed to reach the target
-        '''
-        # Cart current state
+        """
+        Execute one control step using Pure Pursuit and MPC.
+        
+        Args:
+            state: Current robot state
+            target: Target position
+            
+        Returns:
+            Tuple of (new_state, cart_state, vx, w, cross_error, finished)
+        """
         cart_state = self.cart_model(state)
 
         # ---- PURE PURSUIT ----
@@ -205,8 +231,8 @@ class Controller:
                 break
 
         w_guess = np.full(self.horizon, self.last_w)
-        #w_guess = np.zeros(self.horizon)
-        #  Bounds for the control inputs
+        
+        # Bounds for the control inputs
         bounds = [(-np.deg2rad(45), np.deg2rad(45))] * self.horizon
 
         try:
@@ -215,8 +241,7 @@ class Controller:
                 w_guess,
                 method='SLSQP',
                 bounds=bounds,
-                
-                options=dict(maxiter=100, disp=False)  # ← add disp=False
+                options=dict(maxiter=100, disp=False)
             )
         except Exception as e:
             print(f"Optimization error: {e}")
