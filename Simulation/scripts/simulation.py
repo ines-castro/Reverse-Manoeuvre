@@ -6,8 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import Button, RadioButtons
 
-import geometry_solver
-import control
+from . import geometry_solver, control
 
 class Simulation:
     """

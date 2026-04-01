@@ -1,4 +1,4 @@
-from simulation import Simulation
+from scripts.simulation import Simulation
 import argparse
 
 def main():
