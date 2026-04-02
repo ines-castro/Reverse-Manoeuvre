@@ -7,7 +7,8 @@
 #include <tf2_msgs/TFMessage.h>
 #include <nav_msgs/Odometry.h>
 #include <std_msgs/Float64.h>
-#include <tf2/LinearMath/Quaternion.h>      
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
@@ -16,6 +17,8 @@
 #include <sstream>
 #include <vector>
 #include <string>
+#include <cmath>
+#include <limits>
 
 struct PathPoint
 {
@@ -48,60 +51,56 @@ namespace csai
         // --------------------------------
         ros::NodeHandle nh_;
         ros::NodeHandle nhPriv_;
-        tf2_ros::Buffer tfBuffer_;
-        tf2_ros::TransformListener tfListener_; 
-        tf2_ros::TransformBroadcaster tfBroadcaster_;
-        ros::Subscriber m_odomSub;
+        tf2_ros::Buffer m_tfBuffer;
+        tf2_ros::TransformListener m_tfListener; 
+        tf2_ros::TransformBroadcaster m_tfBroadcaster;
         ros::Subscriber m_gripperAngleSub;
-        ros::Subscriber m_robotTfSub;
-        ros::Timer m_timer;
+        ros::Timer m_tfTimer;
+        ros::Timer m_controlTimer;
         ros::Publisher m_cmdPub;
 
-        // --------------------------------
-        // CONFIGURATION
-        // --------------------------------
-        const float m_cartLength;
-        const float m_fixedWheelDist, m_gripperLength;
-        const float m_reverseSpeed;
-        const std::string m_robotFrame;
-        const std::string m_gripperFrame;
-        const std::string m_cartBackFrame;
-        const std::string m_cartWheelsFrame;
+        // ================================
+        // Configuration
+        // ================================
+        float m_reverseSpeed;
+        float m_maxGamma; 
 
-        // --------------------------------
-        // PARAMETERS
-        // --------------------------------
-        ros::Time m_lastTime;
-        std::vector<PathPoint> ref_path_;
+        // Cart dimensions
+        float m_cartLength, m_fixedWheelDist, m_gripperLength;
 
         // Controller parameters
-        float K_dist, K_turn, K_hitch;
-        float horizon, lookaheadDist;
+        float K_dist, K_turn, K_hitch, horizon, lookaheadDist;
+
+        // Frame names
+        std::string m_worldFrame, m_robotFrame, m_gripperFrame, m_cartBackFrame, m_cartWheelsFrame;
+        PathPoint m_target;
+
+        // ================================
+        // PARAMETERS
+        // ================================
+        ros::Time m_lastTime;
+        std::vector<PathPoint> m_referencePath;
+
+        // Controller parameters
 
         float m_gripperAngle;
-        State m_robotPose;
-        State m_cartState;
+        State m_robotState;
+        State m_cartWheelsState;
+        State m_cartBackState;
 
         bool m_debug;
-
         
-        // --------------------------------
-        // CALLBACKS
-        // --------------------------------
+        // ================================
+        // FUNCTIONS
+        // ================================
         void gripperAngleCb(const std_msgs::Float64::ConstPtr& msg);
+        void publishVelocityCommand(float linear_x, float angular_z);
+        void controlLoop(const ros::TimerEvent& event);
         void robotTfCb(const ros::TimerEvent& event);
-
-        /**
-        * @brief Loads reference path from CSV file
-        * Reads a CSV file with format: x,y (skips header row)
-        * and populates m_referencePath with PathPoint structs.
-        * 
-        * @param file_path Absolute or relative path to CSV file
-        */
-        void loadCsvPath(const std::string file_path);
         void sendOffsetTF(const std::string parent_frame, const std::string child_frame, float x_offset);
-        int findClosestPathPoint();
-    
+        void updatePoseFromTF(const geometry_msgs::TransformStamped& transform, State& state);
+        void loadCsvPath(const std::string file_path);
+        int findClosestPathPoint(State cartState);
 
     };
 
