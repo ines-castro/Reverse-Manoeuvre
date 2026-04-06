@@ -12,6 +12,8 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
+#include <ros/package.h>
+#include <movai_common/PayloadInfo.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -19,6 +21,7 @@
 #include <string>
 #include <cmath>
 #include <limits>
+#include <yaml-cpp/yaml.h>
 
 struct PathPoint
 {
@@ -31,6 +34,16 @@ struct State
     float x;
     float y;
     float heading;
+};
+
+struct CartDimensions
+{
+    float length;
+    float width;
+    float height;
+    float length_to_fixed_wheel;
+    float attach_offset;
+    float engage_bar_height;
 };
 
 namespace csai 
@@ -49,12 +62,13 @@ namespace csai
         // --------------------------------
         // ROS COMMUNICATION
         // --------------------------------
-        ros::NodeHandle nh_;
-        ros::NodeHandle nhPriv_;
+        ros::NodeHandle m_nh;
+        ros::NodeHandle m_nhPriv;
         tf2_ros::Buffer m_tfBuffer;
         tf2_ros::TransformListener m_tfListener; 
         tf2_ros::TransformBroadcaster m_tfBroadcaster;
         ros::Subscriber m_gripperAngleSub;
+        ros::Subscriber m_payloadIdSub;
         ros::Timer m_tfTimer;
         ros::Timer m_controlTimer;
         ros::Publisher m_cmdPub;
@@ -72,7 +86,7 @@ namespace csai
         float K_dist, K_turn, K_hitch, horizon, lookaheadDist;
 
         // Frame names
-        std::string m_worldFrame, m_robotFrame, m_gripperFrame, m_cartBackFrame, m_cartWheelsFrame;
+        std::string m_worldFrame, m_robotFrame, m_gripperFrame, m_cartWheelsFrame, m_cartBackFrame;
         PathPoint m_target;
 
         // ================================
@@ -80,6 +94,8 @@ namespace csai
         // ================================
         ros::Time m_lastTime;
         std::vector<PathPoint> m_referencePath;
+        std::string m_payloadId;
+        std::string m_payloadConfig;
 
         // Controller parameters
 
@@ -94,6 +110,8 @@ namespace csai
         // FUNCTIONS
         // ================================
         void gripperAngleCb(const std_msgs::Float64::ConstPtr& msg);
+        void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
+        void loadCartDimensions(const std::string& payload_id);
         void publishVelocityCommand(float linear_x, float angular_z);
         void controlLoop(const ros::TimerEvent& event);
         void robotTfCb(const ros::TimerEvent& event);
@@ -101,6 +119,7 @@ namespace csai
         void updatePoseFromTF(const geometry_msgs::TransformStamped& transform, State& state);
         void loadCsvPath(const std::string file_path);
         int findClosestPathPoint(State cartState);
+
 
     };
 

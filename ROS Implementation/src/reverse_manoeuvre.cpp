@@ -8,19 +8,19 @@ namespace csai
     }
 
     ReverseManoeuvre::ReverseManoeuvre(ros::NodeHandle &f_nh, ros::NodeHandle &f_nhPriv) 
-        : m_tfListener(m_tfBuffer)  // Initialize listener with buffer
+        : m_tfListener(m_tfBuffer),     // Initialize listener with buffer
+          m_nh(f_nh),                   // Store the node handle
+          m_nhPriv(f_nhPriv)            // Store the private node handle
     {
         // --- PARAMETERS ------------------------------------
-        f_nhPriv.param("gripper_angle", m_gripperAngle, 0.0f);
         f_nhPriv.param("reverse_speed", m_reverseSpeed, -0.2f);
-        f_nhPriv.param("fixed_wheel_dist", m_fixedWheelDist, 0.25f);
         f_nhPriv.param("gripper_length", m_gripperLength, 0.45f);
-        f_nhPriv.param("cart_length", m_cartLength, 0.0f);
         f_nhPriv.param("gripper_angle_limit", m_maxGamma, 37.0f);
         m_maxGamma = m_maxGamma * (M_PI / 180.0f);
         f_nhPriv.param("debug", m_debug, false);
         
         // Frame names
+        f_nhPriv.param<std::string>("payload_config", m_payloadConfig, "payload_config_template");
         f_nhPriv.param<std::string>("world_frame", m_worldFrame, std::string("map"));
         f_nhPriv.param<std::string>("robot_frame", m_robotFrame, std::string("base_link"));
         f_nhPriv.param<std::string>("gripper_frame", m_gripperFrame, std::string("gripper_move"));
@@ -29,6 +29,7 @@ namespace csai
 
         // --- SUBSCRIBERS ------------------------------------
         m_gripperAngleSub = f_nh.subscribe("gripper_angle", 1, &ReverseManoeuvre::gripperAngleCb, this);
+        m_payloadIdSub = f_nh.subscribe("payload_id", 1, &ReverseManoeuvre::payloadIdCb, this);
 
         // --- TIMERS ------------------------------------
         m_tfTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::robotTfCb, this);
@@ -37,10 +38,14 @@ namespace csai
         m_controlTimer.stop();
 
         // --- PUBLISHERS ------------------------------------
-        m_cmdPub = f_nh.advertise<std_msgs::Float64>("m_cmdPub", 0);
+        m_cmdPub = f_nh.advertise<geometry_msgs::Twist>("cmd_vel", 0);
 
-        loadCsvPath("./path_points.csv");
+        std::string package_path = ros::package::getPath("reverse_manoeuvre_pkg");
+        std::string csv_path = package_path + "/config/path_points.csv";
+        loadCsvPath(csv_path);
         m_target = m_referencePath.back();
+
+        publishVelocityCommand(0.0, 0.0); // Ensure robot is stopped at startup
     }
 
     // ==========================================================
@@ -148,6 +153,97 @@ namespace csai
         // Publish the command
         m_cmdPub.publish(cmdMsg);
     }
+    
+    void ReverseManoeuvre::payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg)
+    {
+        // Change only if the payload ID is different from the current one
+        std::string new_payload_id = msg->id_candidates[0];
+        if (new_payload_id != m_payloadId)
+        {
+            ROS_INFO("Received new payload ID: %s", new_payload_id.c_str());
+            m_payloadId = new_payload_id;
+            loadCartDimensions(m_payloadId);
+        }
+
+    }   
+
+    void ReverseManoeuvre::loadCartDimensions(const std::string& payload_id)
+    {
+        XmlRpc::XmlRpcValue config;
+        ROS_INFO("Trying to load YAML file: m_payloadConfig=%s", m_payloadConfig.c_str());
+
+        if (!m_nhPriv.getParam(m_payloadConfig, config))
+        {
+            ROS_ERROR("Failed to get parameter: %s", m_payloadConfig.c_str());
+            return;  // <-- This is why you never get to the ROS_INFO!
+        }
+
+        ROS_INFO("DEBUG: payload_id = '%s'", payload_id.c_str());
+        if (config.getType() == XmlRpc::XmlRpcValue::TypeStruct)
+        {
+            ROS_INFO("Iterating through config keys...");
+            try 
+            {
+                for (XmlRpc::XmlRpcValue::iterator it = config.begin(); it != config.end(); ++it)
+                {
+                    ROS_INFO("  Key: %s", it->first.c_str());
+                }
+            }
+            catch (...)
+            {
+                ROS_ERROR("Exception while iterating config!");
+            }
+        }
+        else
+        {
+            ROS_ERROR("Config is not a struct! Type: %d", config.getType());
+        }
+        
+        try
+        {
+            if (config.hasMember("cart_info"))
+            {
+                ROS_INFO("DEBUG: It's a cart, checking for cart_info...");
+                
+                ROS_INFO("DEBUG: cart_info exists, getting reference...");
+                XmlRpc::XmlRpcValue& cart_info = config["cart_info"];
+                
+                ROS_INFO("DEBUG: Checking if %s exists in cart_info...", payload_id.c_str());
+                if (!cart_info.hasMember(payload_id))
+                {
+                    ROS_ERROR("cart_info does not have '%s'!", payload_id.c_str());
+                    return;
+                }
+                
+                ROS_INFO("DEBUG: Getting cart_data...");
+                XmlRpc::XmlRpcValue& cart_data = cart_info[payload_id];
+                
+                ROS_INFO("DEBUG: Checking for cart_dimensions...");
+                if (!cart_data.hasMember("cart_dimensions"))
+                {
+                    ROS_ERROR("No cart_dimensions!");
+                    return;
+                }
+                
+                ROS_INFO("DEBUG: Getting cart_dims...");
+                XmlRpc::XmlRpcValue& cart_dims = cart_data["cart_dimensions"];
+                
+                ROS_INFO("DEBUG: Extracting values...");
+                m_cartLength = static_cast<double>(cart_dims["length"]);
+                m_fixedWheelDist = static_cast<double>(cart_dims["length_to_fixed_wheel"]);
+                
+                ROS_INFO("SUCCESS! Loaded: length=%.3f, wheel_dist=%.3f", m_cartLength, m_fixedWheelDist);
+            }
+            else
+            {
+                ROS_WARN("Not a cart (doesn't have 'id_')");
+            }
+        }
+        catch (const std::exception& e)
+        {
+            ROS_ERROR("Exception: %s", e.what());
+        }
+    }
 
     // ==========================================================
     // PATH FOLLOWING UTILITIES
@@ -155,11 +251,17 @@ namespace csai
     void ReverseManoeuvre::loadCsvPath(const std::string file_path)
     {
         std::ifstream file(file_path); // Open the CSV file
+        // Verify that the file can be opened
+        if (!file.is_open())
+        {
+            ROS_ERROR("Failed to open CSV file: %s", file_path.c_str());
+            return;
+        }
+        
         std::string line;
-
-        // Skip the header line
         std::getline(file, line);
-
+        
+        int point_count = 0;
         while (std::getline(file, line))
         {
             std::stringstream iss(line);
@@ -176,8 +278,11 @@ namespace csai
             
             // Add the point to the reference path vector
             m_referencePath.push_back(point);
+            point_count++;
         }
-
+        
+        ROS_INFO("Loaded %d path points from CSV", point_count);
+        file.close();
     }
 
     int ReverseManoeuvre::findClosestPathPoint(State cartState)
