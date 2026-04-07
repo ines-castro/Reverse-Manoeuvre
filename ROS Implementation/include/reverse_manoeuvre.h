@@ -105,6 +105,7 @@ namespace csai
         State m_cartBackState;
 
         bool m_debug;
+        bool m_cartDimensionsLoaded;
         
         // ================================
         // FUNCTIONS

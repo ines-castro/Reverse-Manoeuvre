@@ -10,7 +10,8 @@ namespace csai
     ReverseManoeuvre::ReverseManoeuvre(ros::NodeHandle &f_nh, ros::NodeHandle &f_nhPriv) 
         : m_tfListener(m_tfBuffer),     // Initialize listener with buffer
           m_nh(f_nh),                   // Store the node handle
-          m_nhPriv(f_nhPriv)            // Store the private node handle
+          m_nhPriv(f_nhPriv),           // Store the private node handle
+          m_cartDimensionsLoaded(false) // Cart dimensions not loaded yet
     {
         // --- PARAMETERS ------------------------------------
         f_nhPriv.param("reverse_speed", m_reverseSpeed, -0.2f);
@@ -35,7 +36,8 @@ namespace csai
 
         // --- TIMERS ------------------------------------
         m_tfTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::robotTfCb, this);
-        m_tfTimer.stop();
+        m_tfTimer.stop(); // Don't start until cart dimensions are loaded
+    
         m_controlTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::controlLoop, this);
         m_controlTimer.stop();
 
@@ -165,6 +167,13 @@ namespace csai
             if (m_debug) ROS_INFO("Detected new payload ID: %s", new_payload_id.c_str());
             m_payloadId = new_payload_id;
             loadCartDimensions(m_payloadId);
+            
+            // Start TF timer after first successful cart dimensions load
+            if (m_cartDimensionsLoaded && !m_tfTimer.hasStarted())
+            {
+                m_tfTimer.start();
+                if (m_debug) ROS_INFO("TF timer started after loading cart dimensions");
+            }
         }
 
     }   
@@ -202,6 +211,8 @@ namespace csai
                 m_cartLength = (double)(cart_dimensions["length"]);
                 m_fixedWheelDist = (double)(cart_dimensions["length_to_fixed_wheel"]);
 
+                m_cartDimensionsLoaded = true; 
+                
                 if (m_debug) ROS_INFO("SUCCESS! Loaded: length=%.3f, wheel_dist=%.3f", m_cartLength, m_fixedWheelDist);
             }
             else
