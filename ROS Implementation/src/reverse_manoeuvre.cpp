@@ -20,13 +20,15 @@ namespace csai
         f_nhPriv.param("debug", m_debug, false);
         
         // Frame names
-        f_nhPriv.param<std::string>("payload_config", m_payloadConfig, "payload_config_template");
+        
         f_nhPriv.param<std::string>("world_frame", m_worldFrame, std::string("map"));
         f_nhPriv.param<std::string>("robot_frame", m_robotFrame, std::string("base_link"));
         f_nhPriv.param<std::string>("gripper_frame", m_gripperFrame, std::string("gripper_move"));
         f_nhPriv.param<std::string>("cart_back_frame", m_cartBackFrame, std::string("cart_back"));
         f_nhPriv.param<std::string>("cart_wheels_frame", m_cartWheelsFrame, std::string("cart_fixed_wheels"));
+        f_nhPriv.param("payload_config", m_payloadConfig, XmlRpc::XmlRpcValue());
 
+        
         // --- SUBSCRIBERS ------------------------------------
         m_gripperAngleSub = f_nh.subscribe("gripper_angle", 1, &ReverseManoeuvre::gripperAngleCb, this);
         m_payloadIdSub = f_nh.subscribe("payload_id", 1, &ReverseManoeuvre::payloadIdCb, this);
@@ -160,7 +162,7 @@ namespace csai
         std::string new_payload_id = msg->id_candidates[0];
         if (new_payload_id != m_payloadId)
         {
-            ROS_INFO("Received new payload ID: %s", new_payload_id.c_str());
+            if (m_debug) ROS_INFO("Detected new payload ID: %s", new_payload_id.c_str());
             m_payloadId = new_payload_id;
             loadCartDimensions(m_payloadId);
         }
@@ -169,74 +171,42 @@ namespace csai
 
     void ReverseManoeuvre::loadCartDimensions(const std::string& payload_id)
     {
-        XmlRpc::XmlRpcValue config;
-        ROS_INFO("Trying to load YAML file: m_payloadConfig=%s", m_payloadConfig.c_str());
 
-        if (!m_nhPriv.getParam(m_payloadConfig, config))
+        // If data loaded is not a struct, there is a problem somewhere
+        if (!m_nhPriv.getParam("payload_config", m_payloadConfig) or m_payloadConfig.getType() != XmlRpc::XmlRpcValue::TypeStruct)
         {
-            ROS_ERROR("Failed to get parameter: %s", m_payloadConfig.c_str());
-            return;  // <-- This is why you never get to the ROS_INFO!
+            ROS_WARN("Config loaded has to be a struct! Current type: %d", m_payloadConfig.getType());
+            return;
         }
 
-        ROS_INFO("DEBUG: payload_id = '%s'", payload_id.c_str());
-        if (config.getType() == XmlRpc::XmlRpcValue::TypeStruct)
-        {
-            ROS_INFO("Iterating through config keys...");
-            try 
-            {
-                for (XmlRpc::XmlRpcValue::iterator it = config.begin(); it != config.end(); ++it)
-                {
-                    ROS_INFO("  Key: %s", it->first.c_str());
-                }
-            }
-            catch (...)
-            {
-                ROS_ERROR("Exception while iterating config!");
-            }
-        }
-        else
-        {
-            ROS_ERROR("Config is not a struct! Type: %d", config.getType());
-        }
-        
         try
         {
-            if (config.hasMember("cart_info"))
+            if (m_payloadConfig.hasMember(payload_id))
             {
-                ROS_INFO("DEBUG: It's a cart, checking for cart_info...");
-                
-                ROS_INFO("DEBUG: cart_info exists, getting reference...");
-                XmlRpc::XmlRpcValue& cart_info = config["cart_info"];
-                
-                ROS_INFO("DEBUG: Checking if %s exists in cart_info...", payload_id.c_str());
-                if (!cart_info.hasMember(payload_id))
+                // Struct with all the info regarding the payload
+                XmlRpc::XmlRpcValue& payload_data = m_payloadConfig[payload_id];
+                if (!payload_data.hasMember("object_dimensions") || payload_data.getType() != XmlRpc::XmlRpcValue::TypeStruct)
                 {
-                    ROS_ERROR("cart_info does not have '%s'!", payload_id.c_str());
+                    ROS_ERROR("The payload configuration has to have key 'object_dimensions'");
                     return;
                 }
-                
-                ROS_INFO("DEBUG: Getting cart_data...");
-                XmlRpc::XmlRpcValue& cart_data = cart_info[payload_id];
-                
-                ROS_INFO("DEBUG: Checking for cart_dimensions...");
-                if (!cart_data.hasMember("cart_dimensions"))
+
+                // Struct with payload dimensions
+                XmlRpc::XmlRpcValue& cart_dimensions = payload_data["object_dimensions"];
+                if (!cart_dimensions.hasMember("length_to_fixed_wheel") || !cart_dimensions.hasMember("width"))
                 {
-                    ROS_ERROR("No cart_dimensions!");
+                    ROS_ERROR("The payload configuration is missing required cart dimension parameters!");
                     return;
                 }
-                
-                ROS_INFO("DEBUG: Getting cart_dims...");
-                XmlRpc::XmlRpcValue& cart_dims = cart_data["cart_dimensions"];
-                
-                ROS_INFO("DEBUG: Extracting values...");
-                m_cartLength = static_cast<double>(cart_dims["length"]);
-                m_fixedWheelDist = static_cast<double>(cart_dims["length_to_fixed_wheel"]);
-                
-                ROS_INFO("SUCCESS! Loaded: length=%.3f, wheel_dist=%.3f", m_cartLength, m_fixedWheelDist);
+
+                m_cartLength = (double)(cart_dimensions["length"]);
+                m_fixedWheelDist = (double)(cart_dimensions["length_to_fixed_wheel"]);
+
+                if (m_debug) ROS_INFO("SUCCESS! Loaded: length=%.3f, wheel_dist=%.3f", m_cartLength, m_fixedWheelDist);
             }
             else
             {
-                ROS_WARN("Not a cart (doesn't have 'id_')");
+                ROS_WARN("Configuration file doesn't have information regarding payload with id '%s'", payload_id.c_str());
             }
         }
         catch (const std::exception& e)
@@ -280,7 +250,7 @@ namespace csai
             m_referencePath.push_back(point);
             point_count++;
         }
-        
+
         ROS_INFO("Loaded %d path points from CSV", point_count);
         file.close();
     }

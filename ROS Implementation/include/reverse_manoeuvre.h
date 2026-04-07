@@ -95,7 +95,7 @@ namespace csai
         ros::Time m_lastTime;
         std::vector<PathPoint> m_referencePath;
         std::string m_payloadId;
-        std::string m_payloadConfig;
+        XmlRpc::XmlRpcValue m_payloadConfig;
 
         // Controller parameters
 
