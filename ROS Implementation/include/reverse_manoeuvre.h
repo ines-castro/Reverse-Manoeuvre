@@ -6,13 +6,15 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <tf2_msgs/TFMessage.h>
 #include <nav_msgs/Odometry.h>
-#include <std_msgs/Float64.h>
+#include <std_msgs/Float32.h>
+#include <std_msgs/Bool.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <ros/package.h>
+#include <movai_common/SceneDataArray.h>
 #include <movai_common/PayloadInfo.h>
 #include <iostream>
 #include <fstream>
@@ -69,6 +71,7 @@ namespace csai
         tf2_ros::TransformBroadcaster m_tfBroadcaster;
         ros::Subscriber m_gripperAngleSub;
         ros::Subscriber m_payloadIdSub;
+        ros::Subscriber m_triggerSub;
         ros::Timer m_tfTimer;
         ros::Timer m_controlTimer;
         ros::Publisher m_cmdPub;
@@ -110,7 +113,8 @@ namespace csai
         // ================================
         // FUNCTIONS
         // ================================
-        void gripperAngleCb(const std_msgs::Float64::ConstPtr& msg);
+        void triggerCb(const std_msgs::Bool::ConstPtr& msg);
+        void gripperAngleCb(const std_msgs::Float32::ConstPtr& msg);
         void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
         void loadCartDimensions(const std::string& payload_id);
         void publishVelocityCommand(float linear_x, float angular_z);

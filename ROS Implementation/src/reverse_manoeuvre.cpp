@@ -28,18 +28,18 @@ namespace csai
         f_nhPriv.param<std::string>("cart_back_frame", m_cartBackFrame, std::string("cart_back"));
         f_nhPriv.param<std::string>("cart_wheels_frame", m_cartWheelsFrame, std::string("cart_fixed_wheels"));
         f_nhPriv.param("payload_config", m_payloadConfig, XmlRpc::XmlRpcValue());
-
         
         // --- SUBSCRIBERS ------------------------------------
         m_gripperAngleSub = f_nh.subscribe("gripper_angle", 1, &ReverseManoeuvre::gripperAngleCb, this);
         m_payloadIdSub = f_nh.subscribe("payload_id", 1, &ReverseManoeuvre::payloadIdCb, this);
+        m_triggerSub = f_nh.subscribe("trigger", 1, &ReverseManoeuvre::triggerCb, this);
 
         // --- TIMERS ------------------------------------
         m_tfTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::robotTfCb, this);
         m_tfTimer.stop(); // Don't start until cart dimensions are loaded
     
         m_controlTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::controlLoop, this);
-        m_controlTimer.stop();
+        //m_controlTimer.stop();
 
         // --- PUBLISHERS ------------------------------------
         m_cmdPub = f_nh.advertise<geometry_msgs::Twist>("cmd_vel", 0);
@@ -118,12 +118,6 @@ namespace csai
             
             // Save the heading angle
             state.heading = (float)yaw;
-            
-            if (m_debug)
-            {
-                ROS_INFO("Pose updated: x=%.3f, y=%.3f, heading=%.3f", 
-                        state.x, state.y, state.heading);
-            }
         }
         catch (tf2::TransformException &ex)
         {
@@ -134,9 +128,33 @@ namespace csai
     // ==========================================================
     // SIMPLE CALLBACKS 
     // ==========================================================
-    void ReverseManoeuvre::gripperAngleCb(const std_msgs::Float64::ConstPtr& msg)
+    void ReverseManoeuvre::triggerCb(const std_msgs::Bool::ConstPtr& msg)
     {
-        // Update the gripper angle based on the received message
+        // When trigger is requested
+        if (msg->data)
+        {   
+            // Start the control loop if not already started
+            if (!m_controlTimer.hasStarted() and m_cartDimensionsLoaded)
+            {
+                m_controlTimer.start();
+                if (m_debug) ROS_INFO("Control timer started");
+            }
+            // The control loop needs the cart dimensions
+            else if (!m_cartDimensionsLoaded)
+            {
+                ROS_WARN("Cannot start control loop: Cart dimensions not loaded yet!");
+            }
+        }
+        else
+        {
+            if (m_debug) ROS_WARN("Trigger to stop received.");
+            publishVelocityCommand(0.0, 0.0); // Stop the robot immediately
+            m_controlTimer.stop();
+        }
+    }
+
+    void ReverseManoeuvre::gripperAngleCb(const std_msgs::Float32::ConstPtr& msg)
+    {
         m_gripperAngle = msg->data;
     }
 
@@ -175,12 +193,10 @@ namespace csai
                 if (m_debug) ROS_INFO("TF timer started after loading cart dimensions");
             }
         }
-
     }   
 
     void ReverseManoeuvre::loadCartDimensions(const std::string& payload_id)
     {
-
         // If data loaded is not a struct, there is a problem somewhere
         if (!m_nhPriv.getParam("payload_config", m_payloadConfig) or m_payloadConfig.getType() != XmlRpc::XmlRpcValue::TypeStruct)
         {
@@ -359,8 +375,13 @@ namespace csai
             return;
         }
 
+        w = 0.0; // For now, we just want to go straight back and check the TFs and path following logic
+        m_reverseSpeed = -0.13; // Set a constant reverse speed for testing
+
+        ROS_WARN("Sending command: linear_x=%.2f, angular_z=%.2f, ", m_reverseSpeed, w);
         publishVelocityCommand(m_reverseSpeed, w);
         
     }
+
 
 } // namespace csai
