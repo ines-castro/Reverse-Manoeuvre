@@ -11,17 +11,24 @@ namespace csai
         : m_tfListener(m_tfBuffer),     // Initialize listener with buffer
           m_nh(f_nh),                   // Store the node handle
           m_nhPriv(f_nhPriv),           // Store the private node handle
-          m_cartDimensionsLoaded(false) // Cart dimensions not loaded yet
+          m_cartDimensionsLoaded(false), // Cart dimensions not loaded yet
+          m_state(ManeuverState::IDLE)   // Initialize state to IDLE
     {
         // --- PARAMETERS ------------------------------------
         f_nhPriv.param("reverse_speed", m_reverseSpeed, -0.2f);
         f_nhPriv.param("gripper_length", m_gripperLength, 0.45f);
+        f_nhPriv.param("initial_angle", m_initialAngle, 37.0f);
         f_nhPriv.param("gripper_angle_limit", m_maxGamma, 37.0f);
-        m_maxGamma = m_maxGamma * (M_PI / 180.0f);
         f_nhPriv.param("debug", m_debug, false);
+        f_nhPriv.param("K_dist", m_kDist, 8.0f);
+        f_nhPriv.param("K_turn", m_kTurn, 1.5f);
+        f_nhPriv.param("lookahead_distance", m_lookaheadDist, 0.5f);
+
+        // Convert from degrees to radians
+        m_initialAngle = m_initialAngle * DEG_TO_RAD;
+        m_maxGamma = m_maxGamma * DEG_TO_RAD;
         
         // Frame names
-        
         f_nhPriv.param<std::string>("world_frame", m_worldFrame, std::string("map"));
         f_nhPriv.param<std::string>("robot_frame", m_robotFrame, std::string("base_link"));
         f_nhPriv.param<std::string>("gripper_frame", m_gripperFrame, std::string("gripper_move"));
@@ -31,23 +38,27 @@ namespace csai
         
         // --- SUBSCRIBERS ------------------------------------
         m_gripperAngleSub = f_nh.subscribe("gripper_angle", 1, &ReverseManoeuvre::gripperAngleCb, this);
-        m_payloadIdSub = f_nh.subscribe("payload_id", 1, &ReverseManoeuvre::payloadIdCb, this);
+        m_payloadIdSub = f_nh.subscribe("payload_info", 1, &ReverseManoeuvre::payloadIdCb, this);
         m_triggerSub = f_nh.subscribe("trigger", 1, &ReverseManoeuvre::triggerCb, this);
 
         // --- TIMERS ------------------------------------
         m_tfTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::robotTfCb, this);
         m_tfTimer.stop(); // Don't start until cart dimensions are loaded
     
-        m_controlTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::controlLoop, this);
+        m_controlTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::maneuverStages, this);
         //m_controlTimer.stop();
 
         // --- PUBLISHERS ------------------------------------
         m_cmdPub = f_nh.advertise<geometry_msgs::Twist>("cmd_vel", 0);
 
+        // Latched topic sends it to new subscribers
+        m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true); 
+
         std::string package_path = ros::package::getPath("reverse_manoeuvre_pkg");
         std::string csv_path = package_path + "/config/path_points.csv";
         loadCsvPath(csv_path);
         m_target = m_referencePath.back();
+        visualisePath(m_referencePath);
 
         publishVelocityCommand(0.0, 0.0); // Ensure robot is stopped at startup
     }
@@ -58,7 +69,6 @@ namespace csai
     void ReverseManoeuvre::robotTfCb(const ros::TimerEvent& event)
     {
         geometry_msgs::TransformStamped baseTF;
-
         try
         {
             baseTF = m_tfBuffer.lookupTransform(m_worldFrame, m_robotFrame, ros::Time(0));
@@ -178,6 +188,12 @@ namespace csai
     
     void ReverseManoeuvre::payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg)
     {
+         if (msg->id_candidates.empty()) 
+        {
+            if(m_debug) ROS_WARN("Received PayloadInfo but id_candidates is empty!");
+            return; 
+        }
+
         // Change only if the payload ID is different from the current one
         std::string new_payload_id = msg->id_candidates[0];
         if (new_payload_id != m_payloadId)
@@ -185,11 +201,12 @@ namespace csai
             if (m_debug) ROS_INFO("Detected new payload ID: %s", new_payload_id.c_str());
             m_payloadId = new_payload_id;
             loadCartDimensions(m_payloadId);
-            
+
             // Start TF timer after first successful cart dimensions load
             if (m_cartDimensionsLoaded && !m_tfTimer.hasStarted())
             {
                 m_tfTimer.start();
+                m_state = ManeuverState::POSITIONING; // Transition to positioning state
                 if (m_debug) ROS_INFO("TF timer started after loading cart dimensions");
             }
         }
@@ -245,6 +262,14 @@ namespace csai
     // ==========================================================
     // PATH FOLLOWING UTILITIES
     // ==========================================================
+    float ReverseManoeuvre::normalizeAngle(float angle)
+    {
+        angle = fmod(angle + M_PI, 2.0 * M_PI);
+        if (angle < 0)
+            angle += 2.0 * M_PI;
+        return angle - M_PI;
+    }
+
     void ReverseManoeuvre::loadCsvPath(const std::string file_path)
     {
         std::ifstream file(file_path); // Open the CSV file
@@ -282,6 +307,31 @@ namespace csai
         file.close();
     }
 
+    void ReverseManoeuvre::visualisePath(const std::vector<PathPoint>& path)
+    {
+        nav_msgs::Path pathMsg;
+        pathMsg.header.frame_id = m_worldFrame;
+        pathMsg.header.stamp = ros::Time::now();
+
+        for (size_t i = 0; i < path.size(); i++)
+        {
+            const PathPoint& point = path[i];
+
+            geometry_msgs::PoseStamped pose;
+
+            // Fill in the x, y coordinates 
+            pose.pose.position.x = point.x;
+            pose.pose.position.y = point.y;
+            pose.pose.position.z = 0.0; 
+            pose.pose.orientation.w = 1.0; // No rotation
+
+            // Add this to the list of poses in the path message
+            pathMsg.poses.push_back(pose);
+        }
+
+        m_pathPub.publish(pathMsg);
+    }
+
     int ReverseManoeuvre::findClosestPathPoint(State cartState)
     {
         int closestIndex = -1;
@@ -307,7 +357,56 @@ namespace csai
     // ==========================================================
     // MAIN LOOP
     // ==========================================================
-    void ReverseManoeuvre::controlLoop(const ros::TimerEvent& event)
+    void ReverseManoeuvre::maneuverStages(const ros::TimerEvent& event)
+    {
+        switch (m_state)
+        {
+            case ManeuverState::IDLE:
+                // Do nothing, waiting for trigger
+                break;
+
+            case ManeuverState::POSITIONING:
+            {
+                // Monitor when the robot reaches the start position of the path
+        
+                // Calculate distance from robot to start point
+                float dx = m_referencePath[0].x - m_robotState.x;
+                float dy = m_referencePath[0].y - m_robotState.y;
+                float distanceToStart = std::sqrt(dx * dx + dy * dy);
+
+                // Check if close enough to start position (within 0.1 meters)
+                if (distanceToStart < 0.1) 
+                {
+                    ROS_INFO("Reached start position. Transitioning to ALIGNING");
+                    publishVelocityCommand(0.0, 0.0); 
+                    m_state = ManeuverState::ALIGNING; 
+                }
+            }
+            break;
+
+            case ManeuverState::ALIGNING: 
+            {
+                publishVelocityCommand(0.0, -1.0); // Rotate in place at a fixed speed for testing
+                float angleError = normalizeAngle(m_robotState.heading - m_initialAngle);
+                if (fabs(angleError) < 0.1)
+                {
+                    ROS_INFO("Aligned with initial angle.");
+                    m_state = ManeuverState::REVERSING;
+                }
+            }
+            break;
+
+            case ManeuverState::REVERSING:
+                pathFollowing(event);
+                break;
+
+            case ManeuverState::COMPLETED:
+                publishVelocityCommand(0.0, 0.0);
+                m_controlTimer.stop();
+                break;
+        }
+    }
+    void ReverseManoeuvre::pathFollowing(const ros::TimerEvent& event)
     {
         // The robot pose is updated from the TF callback, so we just need to update the cart pose
         geometry_msgs::TransformStamped cartWheelsTF, cartBackTF;
@@ -331,6 +430,32 @@ namespace csai
         int min_index = findClosestPathPoint(m_cartWheelsState);
         PathPoint closest_point = m_referencePath[min_index];
 
+        // === CALCULATE CROSS-TRACK ERROR ===
+        // Distance from cart to the closest path point
+        float crossTrackError = std::sqrt(
+            std::pow(m_cartWheelsState.x - closest_point.x, 2) +
+            std::pow(m_cartWheelsState.y - closest_point.y, 2)
+        );
+
+        // Calculate the sign of the error (left or right of path)
+        // Use the path direction to determine which side
+        if (min_index + 1 < m_referencePath.size())
+        {
+            // Path direction vector
+            float path_dx = m_referencePath[min_index + 1].x - closest_point.x;
+            float path_dy = m_referencePath[min_index + 1].y - closest_point.y;
+            
+            // Vector from path to cart
+            float cart_dx = m_cartWheelsState.x - closest_point.x;
+            float cart_dy = m_cartWheelsState.y - closest_point.y;
+            
+            // Cross product to determine side (positive = left, negative = right)
+            float cross = path_dx * cart_dy - path_dy * cart_dx;
+            if (cross < 0) crossTrackError = -crossTrackError;
+        }
+
+        ROS_WARN("Cross-track error: %.3f m (distance from path)", crossTrackError);
+
         // Local target way point
         PathPoint local_target = closest_point;
         // Search for the point in the path that is at least lookahead_distance away from the closest point
@@ -338,7 +463,7 @@ namespace csai
         {
             float dist = std::sqrt(std::pow(m_referencePath[i].x - closest_point.x, 2) +
                                     std::pow(m_referencePath[i].y - closest_point.y, 2));
-            if (dist >= lookaheadDist)
+            if (dist >= m_lookaheadDist)
             {
                 local_target = m_referencePath[i];
                 break;
@@ -349,19 +474,17 @@ namespace csai
         float dx = local_target.x - m_cartWheelsState.x;
         float dy = local_target.y - m_cartWheelsState.y;
         float angleToTarget = std::atan2(dy, dx);
-        float headingError = angleToTarget - m_cartWheelsState.heading;
-        
+
         // Normalize heading error to [-π, π]
-        while (headingError > M_PI) headingError -= 2.0 * M_PI;
-        while (headingError < -M_PI) headingError += 2.0 * M_PI;
+        float headingError = normalizeAngle(angleToTarget - m_cartWheelsState.heading);
         
         // Calculate control output (Pure Pursuit)
-        float w = K_turn * headingError;
+        float w = m_kTurn * headingError;
         
         // Clamp to limits
         if (w > m_maxGamma) w = m_maxGamma;
         if (w < -m_maxGamma) w = -m_maxGamma;
-        
+
         // Check if target reached (use cart back position)
         float dx_target = m_target.x - m_cartBackState.x;
         float dy_target = m_target.y - m_cartBackState.y;
@@ -375,13 +498,12 @@ namespace csai
             return;
         }
 
-        w = 0.0; // For now, we just want to go straight back and check the TFs and path following logic
+        //w = 0.0; // For now, we just want to go straight back and check the TFs and path following logic
         m_reverseSpeed = -0.13; // Set a constant reverse speed for testing
 
-        ROS_WARN("Sending command: linear_x=%.2f, angular_z=%.2f, ", m_reverseSpeed, w);
+        ROS_WARN("Sending command: linear_x=%.3f, angular_z=%.3f, ", m_reverseSpeed, w);
         publishVelocityCommand(m_reverseSpeed, w);
         
     }
-
 
 } // namespace csai

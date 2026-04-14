@@ -6,6 +6,7 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <tf2_msgs/TFMessage.h>
 #include <nav_msgs/Odometry.h>
+#include <nav_msgs/Path.h>
 #include <std_msgs/Float32.h>
 #include <std_msgs/Bool.h>
 #include <tf2/LinearMath/Quaternion.h>
@@ -13,6 +14,7 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
+#include <tf2/utils.h>
 #include <ros/package.h>
 #include <movai_common/SceneDataArray.h>
 #include <movai_common/PayloadInfo.h>
@@ -24,6 +26,18 @@
 #include <cmath>
 #include <limits>
 #include <yaml-cpp/yaml.h>
+
+constexpr float DEG_TO_RAD = M_PI / 180.0f;
+
+// States for the reverse maneuver state machine
+enum class ManeuverState
+{
+    IDLE,              // Waiting for trigger
+    POSITIONING,       // Moving robot to start position
+    ALIGNING,          // Rotating robot to face backward along path
+    REVERSING,         // Actively reversing along path
+    COMPLETED          // Reached target
+};
 
 struct PathPoint
 {
@@ -75,6 +89,7 @@ namespace csai
         ros::Timer m_tfTimer;
         ros::Timer m_controlTimer;
         ros::Publisher m_cmdPub;
+        ros::Publisher m_pathPub;
 
         // ================================
         // Configuration
@@ -86,7 +101,7 @@ namespace csai
         float m_cartLength, m_fixedWheelDist, m_gripperLength;
 
         // Controller parameters
-        float K_dist, K_turn, K_hitch, horizon, lookaheadDist;
+        float m_kDist, m_kTurn, m_kHitch, m_horizon, m_lookaheadDist;
 
         // Frame names
         std::string m_worldFrame, m_robotFrame, m_gripperFrame, m_cartWheelsFrame, m_cartBackFrame;
@@ -95,6 +110,7 @@ namespace csai
         // ================================
         // PARAMETERS
         // ================================
+        ManeuverState m_state;  // Current state of the maneuver
         ros::Time m_lastTime;
         std::vector<PathPoint> m_referencePath;
         std::string m_payloadId;
@@ -106,6 +122,7 @@ namespace csai
         State m_robotState;
         State m_cartWheelsState;
         State m_cartBackState;
+        float m_initialAngle;
 
         bool m_debug;
         bool m_cartDimensionsLoaded;
@@ -118,12 +135,15 @@ namespace csai
         void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
         void loadCartDimensions(const std::string& payload_id);
         void publishVelocityCommand(float linear_x, float angular_z);
-        void controlLoop(const ros::TimerEvent& event);
+        void maneuverStages(const ros::TimerEvent& event); 
+        void pathFollowing(const ros::TimerEvent& event);
         void robotTfCb(const ros::TimerEvent& event);
         void sendOffsetTF(const std::string parent_frame, const std::string child_frame, float x_offset);
         void updatePoseFromTF(const geometry_msgs::TransformStamped& transform, State& state);
         void loadCsvPath(const std::string file_path);
+        void visualisePath(const std::vector<PathPoint>& path);
         int findClosestPathPoint(State cartState);
+        float normalizeAngle(float angle);
 
 
     };
