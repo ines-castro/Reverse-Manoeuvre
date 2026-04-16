@@ -8,6 +8,7 @@
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <std_msgs/Float32.h>
+#include <std_msgs/Float64.h>
 #include <std_msgs/Bool.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -35,6 +36,7 @@ enum class ManeuverState
     IDLE,              // Waiting for trigger
     POSITIONING,       // Moving robot to start position
     ALIGNING,          // Rotating robot to face backward along path
+    PICKING,           // Simulate picking up the payload (could be extended to check gripper status)
     REVERSING,         // Actively reversing along path
     COMPLETED          // Reached target
 };
@@ -90,12 +92,19 @@ namespace csai
         ros::Timer m_controlTimer;
         ros::Publisher m_cmdPub;
         ros::Publisher m_pathPub;
+        ros::Publisher m_crossTrackError;
+
+        // Required for movai twist to tricycle
+        ros::Publisher m_cartWheelbasePub;     
+        ros::Publisher m_gripperAngleFormatedPub;
+
 
         // ================================
         // Configuration
         // ================================
         float m_reverseSpeed;
-        float m_maxGamma; 
+        float m_maxGamma;
+        float m_prevGamma; 
 
         // Cart dimensions
         float m_cartLength, m_fixedWheelDist, m_gripperLength;
@@ -122,7 +131,7 @@ namespace csai
         State m_robotState;
         State m_cartWheelsState;
         State m_cartBackState;
-        float m_initialAngle;
+        float m_initialOrientation;
 
         bool m_debug;
         bool m_cartDimensionsLoaded;
@@ -136,6 +145,8 @@ namespace csai
         void loadCartDimensions(const std::string& payload_id);
         void publishVelocityCommand(float linear_x, float angular_z);
         void maneuverStages(const ros::TimerEvent& event); 
+        float innerLoop(float gamma_ref, float dt);
+        float outerLoop(const State& control_point);
         void pathFollowing(const ros::TimerEvent& event);
         void robotTfCb(const ros::TimerEvent& event);
         void sendOffsetTF(const std::string parent_frame, const std::string child_frame, float x_offset);

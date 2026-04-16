@@ -17,7 +17,7 @@ namespace csai
         // --- PARAMETERS ------------------------------------
         f_nhPriv.param("reverse_speed", m_reverseSpeed, -0.2f);
         f_nhPriv.param("gripper_length", m_gripperLength, 0.45f);
-        f_nhPriv.param("initial_angle", m_initialAngle, 37.0f);
+        f_nhPriv.param("initial_angle", m_initialOrientation, 37.0f);
         f_nhPriv.param("gripper_angle_limit", m_maxGamma, 37.0f);
         f_nhPriv.param("debug", m_debug, false);
         f_nhPriv.param("K_dist", m_kDist, 8.0f);
@@ -25,8 +25,9 @@ namespace csai
         f_nhPriv.param("lookahead_distance", m_lookaheadDist, 0.5f);
 
         // Convert from degrees to radians
-        m_initialAngle = m_initialAngle * DEG_TO_RAD;
+        m_initialOrientation = m_initialOrientation * DEG_TO_RAD;
         m_maxGamma = m_maxGamma * DEG_TO_RAD;
+        m_prevGamma = 0.0f; // Initialize previous gamma to zero    
         
         // Frame names
         f_nhPriv.param<std::string>("world_frame", m_worldFrame, std::string("map"));
@@ -50,7 +51,9 @@ namespace csai
 
         // --- PUBLISHERS ------------------------------------
         m_cmdPub = f_nh.advertise<geometry_msgs::Twist>("cmd_vel", 0);
-
+        m_crossTrackError = f_nh.advertise<std_msgs::Float32>("crossTrackError", 0);
+        m_cartWheelbasePub = f_nh.advertise<std_msgs::Float64>("cart_wheelbase", 1, true);                // To not get it sfrom ioboard sim
+        m_gripperAngleFormatedPub = f_nh.advertise<std_msgs::Float64>("gripper_angle_formated", 1, true); // In Float64 instead of Float32
         // Latched topic sends it to new subscribers
         m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true); 
 
@@ -166,6 +169,11 @@ namespace csai
     void ReverseManoeuvre::gripperAngleCb(const std_msgs::Float32::ConstPtr& msg)
     {
         m_gripperAngle = msg->data;
+
+        // For twist to tricycle, we need to publish the gripper angle in Float64 
+        std_msgs::Float64 toSend;
+        toSend.data = static_cast<double>(m_gripperAngle);
+        m_gripperAngleFormatedPub.publish(toSend);
     }
 
     void ReverseManoeuvre::publishVelocityCommand(float linear_x, float angular_z)
@@ -245,6 +253,11 @@ namespace csai
                 m_fixedWheelDist = (double)(cart_dimensions["length_to_fixed_wheel"]);
 
                 m_cartDimensionsLoaded = true; 
+
+                // TODO: only because twist to tricycle needs it
+                std_msgs::Float64 msg;
+                msg.data = m_gripperLength + m_cartLength;
+                m_cartWheelbasePub.publish(msg);
                 
                 if (m_debug) ROS_INFO("SUCCESS! Loaded: length=%.3f, wheel_dist=%.3f", m_cartLength, m_fixedWheelDist);
             }
@@ -375,7 +388,7 @@ namespace csai
                 float distanceToStart = std::sqrt(dx * dx + dy * dy);
 
                 // Check if close enough to start position (within 0.1 meters)
-                if (distanceToStart < 0.1) 
+                if (distanceToStart < 0.1) // Also check that gripper is closed to avoid false positives
                 {
                     ROS_INFO("Reached start position. Transitioning to ALIGNING");
                     publishVelocityCommand(0.0, 0.0); 
@@ -387,14 +400,22 @@ namespace csai
             case ManeuverState::ALIGNING: 
             {
                 publishVelocityCommand(0.0, -1.0); // Rotate in place at a fixed speed for testing
-                float angleError = normalizeAngle(m_robotState.heading - m_initialAngle);
-                if (fabs(angleError) < 0.1)
+                float orientationError = normalizeAngle(m_robotState.heading - m_initialOrientation);
+                if (fabs(orientationError) < 0.1) 
                 {
                     ROS_INFO("Aligned with initial angle.");
-                    m_state = ManeuverState::REVERSING;
+                    m_state = ManeuverState::PICKING;
                 }
             }
             break;
+
+            case ManeuverState::PICKING:
+                if (fabs(m_gripperAngle) < 0.5f) // Check if gripper is closed (simulate picking)
+                {
+                    ROS_INFO("Simulated picking complete. Transitioning to REVERSING.");
+                    m_state = ManeuverState::REVERSING;
+                }
+                break;
 
             case ManeuverState::REVERSING:
                 pathFollowing(event);
@@ -406,58 +427,16 @@ namespace csai
                 break;
         }
     }
-    void ReverseManoeuvre::pathFollowing(const ros::TimerEvent& event)
+
+    float ReverseManoeuvre::outerLoop(const State& control_point)
     {
-        // The robot pose is updated from the TF callback, so we just need to update the cart pose
-        geometry_msgs::TransformStamped cartWheelsTF, cartBackTF;
-
-        try
-        {
-            cartWheelsTF = m_tfBuffer.lookupTransform(m_worldFrame, m_cartWheelsFrame, ros::Time(0));
-            cartBackTF = m_tfBuffer.lookupTransform(m_worldFrame, m_cartBackFrame, ros::Time(0));
-        }
-        catch (tf2::TransformException &ex)
-        {
-            ROS_WARN("Cannot read cart TF: %s", ex.what());
-            return;
-        }
-
-        // Update cart variables
-        updatePoseFromTF(cartWheelsTF, m_cartWheelsState);
-        updatePoseFromTF(cartBackTF, m_cartBackState);
+        // ----------- Find target on path (Pure Pursuit) -----------
 
         // Obtain the point which has the minimum distance to the robot position
-        int min_index = findClosestPathPoint(m_cartWheelsState);
+        int min_index = findClosestPathPoint(control_point);
         PathPoint closest_point = m_referencePath[min_index];
-
-        // === CALCULATE CROSS-TRACK ERROR ===
-        // Distance from cart to the closest path point
-        float crossTrackError = std::sqrt(
-            std::pow(m_cartWheelsState.x - closest_point.x, 2) +
-            std::pow(m_cartWheelsState.y - closest_point.y, 2)
-        );
-
-        // Calculate the sign of the error (left or right of path)
-        // Use the path direction to determine which side
-        if (min_index + 1 < m_referencePath.size())
-        {
-            // Path direction vector
-            float path_dx = m_referencePath[min_index + 1].x - closest_point.x;
-            float path_dy = m_referencePath[min_index + 1].y - closest_point.y;
-            
-            // Vector from path to cart
-            float cart_dx = m_cartWheelsState.x - closest_point.x;
-            float cart_dy = m_cartWheelsState.y - closest_point.y;
-            
-            // Cross product to determine side (positive = left, negative = right)
-            float cross = path_dx * cart_dy - path_dy * cart_dx;
-            if (cross < 0) crossTrackError = -crossTrackError;
-        }
-
-        ROS_WARN("Cross-track error: %.3f m (distance from path)", crossTrackError);
-
-        // Local target way point
         PathPoint local_target = closest_point;
+
         // Search for the point in the path that is at least lookahead_distance away from the closest point
         for (int i = min_index; i < m_referencePath.size(); ++i)
         {
@@ -470,20 +449,74 @@ namespace csai
             }
         }
 
-        // Calculate angle to target and heading error
-        float dx = local_target.x - m_cartWheelsState.x;
-        float dy = local_target.y - m_cartWheelsState.y;
-        float angleToTarget = std::atan2(dy, dx);
+        // Where the cart needs to face to hit the lookahead point
+        float dx = local_target.x - control_point.x;
+        float dy = local_target.y - control_point.y;
+        float pathAngle = std::atan2(dy, dx);
 
-        // Normalize heading error to [-π, π]
-        float headingError = normalizeAngle(angleToTarget - m_cartWheelsState.heading);
+        // dubious
+        float headingError = normalizeAngle(control_point.heading - pathAngle);
+        float kappa = 2.0f * std::sin(headingError) / m_lookaheadDist;
+
+
+        // Should i calculate the cross track error or not
+        std_msgs::Float32 msg;
+        msg.data = headingError;
+        m_crossTrackError.publish(msg);
+
+        // Convert to hitch reference
+        float gamma_ref = std::atan(1.3 * kappa);
+
+        return std::min(-m_maxGamma, std::max(gamma_ref, m_maxGamma));
+    }
+
+    float ReverseManoeuvre::innerLoop(float gamma_ref, float dt)
+    {
+        float gamma = m_gripperAngle * DEG_TO_RAD;
+        float gamma_error = normalizeAngle(gamma_ref - gamma);
+
+        float gamma_rate = 0.0f;
+        if (dt > 1e-3)
+            gamma_rate = (gamma - m_prevGamma) / dt;
+
+        m_prevGamma = gamma;
+
+        float k_p = 2.0f;
+        float k_d = 0.5f;
+
+        float w = k_p * gamma_error - k_d * gamma_rate;
+
+        return w;
+    }
+
+    void ReverseManoeuvre::pathFollowing(const ros::TimerEvent& event)
+    {
+        // ----------- Get current cart pose from TF -----------
+        geometry_msgs::TransformStamped cartWheelsTF, cartBackTF;
+        try
+        {
+            cartWheelsTF = m_tfBuffer.lookupTransform(m_worldFrame, m_cartWheelsFrame, ros::Time(0));
+            cartBackTF = m_tfBuffer.lookupTransform(m_worldFrame, m_cartBackFrame, ros::Time(0));
+        }
+        catch (tf2::TransformException &ex)
+        {
+            ROS_WARN("Cannot read cart TF: %s", ex.what());
+            return;
+        }
+        // Update cart variables
+        updatePoseFromTF(cartWheelsTF, m_cartWheelsState);
+        updatePoseFromTF(cartBackTF, m_cartBackState);
         
-        // Calculate control output (Pure Pursuit)
-        float w = m_kTurn * headingError;
+        double dt = (event.current_real - event.last_real).toSec();
+
+        // ----------- Calculate reference heading -----------
+        float gamma_ref = outerLoop(m_cartWheelsState);
+
+        // ----------- Calculate control command -----------
+        float w = innerLoop(gamma_ref, dt);
+
         
-        // Clamp to limits
-        if (w > m_maxGamma) w = m_maxGamma;
-        if (w < -m_maxGamma) w = -m_maxGamma;
+        // ----------- Execution and stop conditions -----------
 
         // Check if target reached (use cart back position)
         float dx_target = m_target.x - m_cartBackState.x;
@@ -498,8 +531,7 @@ namespace csai
             return;
         }
 
-        //w = 0.0; // For now, we just want to go straight back and check the TFs and path following logic
-        m_reverseSpeed = -0.13; // Set a constant reverse speed for testing
+        m_reverseSpeed = -0.1; // Set a constant reverse speed for testing
 
         ROS_WARN("Sending command: linear_x=%.3f, angular_z=%.3f, ", m_reverseSpeed, w);
         publishVelocityCommand(m_reverseSpeed, w);
