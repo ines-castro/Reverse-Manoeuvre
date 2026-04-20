@@ -14,6 +14,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
+#include <std_msgs/Float32MultiArray.h>
 #include <tf2_ros/buffer.h>
 #include <tf2/utils.h>
 #include <ros/package.h>
@@ -92,6 +93,7 @@ namespace csai
         ros::Timer m_controlTimer;
         ros::Publisher m_cmdPub;
         ros::Publisher m_pathPub;
+        ros::Publisher m_debugPub;
         ros::Publisher m_crossTrackError;
 
         // Required for movai twist to tricycle
@@ -144,6 +146,7 @@ namespace csai
         void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
         void loadCartDimensions(const std::string& payload_id);
         void publishVelocityCommand(float linear_x, float angular_z);
+        void publishDebugValues(float gamma_ref, float gamma_error, float gamma);
         void maneuverStages(const ros::TimerEvent& event); 
         float innerLoop(float gamma_ref, float dt);
         float outerLoop(const State& control_point);

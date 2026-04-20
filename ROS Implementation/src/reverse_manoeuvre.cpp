@@ -12,7 +12,7 @@ namespace csai
           m_nh(f_nh),                   // Store the node handle
           m_nhPriv(f_nhPriv),           // Store the private node handle
           m_cartDimensionsLoaded(false), // Cart dimensions not loaded yet
-          m_state(ManeuverState::IDLE)   // Initialize state to IDLE
+          m_state(ManeuverState::REVERSING)   // Initialize state to IDLE
     {
         // --- PARAMETERS ------------------------------------
         f_nhPriv.param("reverse_speed", m_reverseSpeed, -0.2f);
@@ -54,6 +54,8 @@ namespace csai
         m_crossTrackError = f_nh.advertise<std_msgs::Float32>("crossTrackError", 0);
         m_cartWheelbasePub = f_nh.advertise<std_msgs::Float64>("cart_wheelbase", 1, true);                // To not get it sfrom ioboard sim
         m_gripperAngleFormatedPub = f_nh.advertise<std_msgs::Float64>("gripper_angle_formated", 1, true); // In Float64 instead of Float32
+        m_debugPub = f_nh.advertise<std_msgs::Float32MultiArray>("debug_values", 10);
+
         // Latched topic sends it to new subscribers
         m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true); 
 
@@ -166,16 +168,6 @@ namespace csai
         }
     }
 
-    void ReverseManoeuvre::gripperAngleCb(const std_msgs::Float32::ConstPtr& msg)
-    {
-        m_gripperAngle = msg->data;
-
-        // For twist to tricycle, we need to publish the gripper angle in Float64 
-        std_msgs::Float64 toSend;
-        toSend.data = static_cast<double>(m_gripperAngle);
-        m_gripperAngleFormatedPub.publish(toSend);
-    }
-
     void ReverseManoeuvre::publishVelocityCommand(float linear_x, float angular_z)
     {
         geometry_msgs::Twist cmdMsg;
@@ -192,6 +184,16 @@ namespace csai
         
         // Publish the command
         m_cmdPub.publish(cmdMsg);
+    }
+
+    void ReverseManoeuvre::publishDebugValues(float gamma_ref, float gamma, float gamma_error)
+    {
+        std_msgs::Float32MultiArray debugMsg;
+        debugMsg.data.resize(3);
+        debugMsg.data[0] = gamma_ref;
+        debugMsg.data[1] = gamma;
+        debugMsg.data[2] = gamma_error;
+        m_debugPub.publish(debugMsg);
     }
     
     void ReverseManoeuvre::payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg)
@@ -219,6 +221,11 @@ namespace csai
             }
         }
     }   
+
+    void ReverseManoeuvre::gripperAngleCb(const std_msgs::Float32::ConstPtr& msg)
+    {
+        m_gripperAngle = msg->data;
+    }
 
     void ReverseManoeuvre::loadCartDimensions(const std::string& payload_id)
     {
@@ -256,7 +263,7 @@ namespace csai
 
                 // TODO: only because twist to tricycle needs it
                 std_msgs::Float64 msg;
-                msg.data = m_gripperLength + m_cartLength;
+                msg.data = m_gripperLength + m_fixedWheelDist;
                 m_cartWheelbasePub.publish(msg);
                 
                 if (m_debug) ROS_INFO("SUCCESS! Loaded: length=%.3f, wheel_dist=%.3f", m_cartLength, m_fixedWheelDist);
@@ -400,9 +407,11 @@ namespace csai
             case ManeuverState::ALIGNING: 
             {
                 publishVelocityCommand(0.0, -1.0); // Rotate in place at a fixed speed for testing
+                ROS_WARN("Aligning... Current heading: %.2f degrees", m_robotState.heading * 180.0f / M_PI);
                 float orientationError = normalizeAngle(m_robotState.heading - m_initialOrientation);
                 if (fabs(orientationError) < 0.1) 
                 {
+                    publishVelocityCommand(0.0, 0.0);
                     ROS_INFO("Aligned with initial angle.");
                     m_state = ManeuverState::PICKING;
                 }
@@ -472,19 +481,27 @@ namespace csai
 
     float ReverseManoeuvre::innerLoop(float gamma_ref, float dt)
     {
+        ROS_WARN("gamma: %.3f, gamma_ref: %.3f", m_gripperAngle, gamma_ref);
         float gamma = m_gripperAngle * DEG_TO_RAD;
         float gamma_error = normalizeAngle(gamma_ref - gamma);
 
+  
         float gamma_rate = 0.0f;
         if (dt > 1e-3)
             gamma_rate = (gamma - m_prevGamma) / dt;
 
         m_prevGamma = gamma;
 
-        float k_p = 2.0f;
-        float k_d = 0.5f;
+        float k_p = 0.5f;
+        float k_d = 0.0f;
 
         float w = k_p * gamma_error - k_d * gamma_rate;
+
+
+        ROS_INFO("gamma rate: %.3f, gamma error: %.3f, w: %.3f", gamma_rate, gamma_error, w);
+
+
+        publishDebugValues(gamma_ref, gamma, gamma_error);
 
         return w;
     }
@@ -510,7 +527,9 @@ namespace csai
         double dt = (event.current_real - event.last_real).toSec();
 
         // ----------- Calculate reference heading -----------
-        float gamma_ref = outerLoop(m_cartWheelsState);
+        //float gamma_ref = outerLoop(m_cartWheelsState);
+
+        float gamma_ref = 0.05;
 
         // ----------- Calculate control command -----------
         float w = innerLoop(gamma_ref, dt);
@@ -531,7 +550,7 @@ namespace csai
             return;
         }
 
-        m_reverseSpeed = -0.1; // Set a constant reverse speed for testing
+        m_reverseSpeed = -0.05; // Set a constant reverse speed for testing
 
         ROS_WARN("Sending command: linear_x=%.3f, angular_z=%.3f, ", m_reverseSpeed, w);
         publishVelocityCommand(m_reverseSpeed, w);
