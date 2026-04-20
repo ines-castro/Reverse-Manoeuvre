@@ -28,7 +28,12 @@ namespace csai
         m_initialOrientation = m_initialOrientation * DEG_TO_RAD;
         m_maxGamma = m_maxGamma * DEG_TO_RAD;
         m_prevGamma = 0.0f; // Initialize previous gamma to zero    
+        m_prevClosestIndex = 0; // Start searching for closest point from the beginning of the path
+        m_prevLookaheadIndex = 0; // Start searching for closest point from the beginning of the path
         
+        
+        m_lookaheadDist = 0.6f; // Set a default lookahead distance (can be tuned based on performance)
+
         // Frame names
         f_nhPriv.param<std::string>("world_frame", m_worldFrame, std::string("map"));
         f_nhPriv.param<std::string>("robot_frame", m_robotFrame, std::string("base_link"));
@@ -55,6 +60,7 @@ namespace csai
         m_cartWheelbasePub = f_nh.advertise<std_msgs::Float64>("cart_wheelbase", 1, true);                // To not get it sfrom ioboard sim
         m_gripperAngleFormatedPub = f_nh.advertise<std_msgs::Float64>("gripper_angle_formated", 1, true); // In Float64 instead of Float32
         m_debugPub = f_nh.advertise<std_msgs::Float32MultiArray>("debug_values", 10);
+        m_lookaheadMarkerPub = f_nh.advertise<visualization_msgs::Marker>("lookahead_marker", 10);
 
         // Latched topic sends it to new subscribers
         m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true); 
@@ -186,14 +192,41 @@ namespace csai
         m_cmdPub.publish(cmdMsg);
     }
 
-    void ReverseManoeuvre::publishDebugValues(float gamma_ref, float gamma, float gamma_error)
+    void ReverseManoeuvre::publishDebugValues(float value1, float value2, float value3)
     {
         std_msgs::Float32MultiArray debugMsg;
         debugMsg.data.resize(3);
-        debugMsg.data[0] = gamma_ref;
-        debugMsg.data[1] = gamma;
-        debugMsg.data[2] = gamma_error;
+        debugMsg.data[0] = value1;
+        debugMsg.data[1] = value2;
+        debugMsg.data[2] = value3;
         m_debugPub.publish(debugMsg);
+    }
+
+    void ReverseManoeuvre::visualizeLookaheadMarker(const PathPoint& point)
+    {
+        visualization_msgs::Marker marker;
+        marker.header.frame_id = m_worldFrame;
+        marker.header.stamp = ros::Time::now();
+        marker.ns = "lookahead_point";
+        marker.id = 0;
+        marker.type = visualization_msgs::Marker::SPHERE;
+        marker.action = visualization_msgs::Marker::ADD;
+
+        // Position
+        marker.pose.position.x = point.x;
+        marker.pose.position.y = point.y;
+        marker.pose.position.z = 0.0;
+
+        // Appearance (Bright Green Sphere)
+        marker.scale.x = 0.1;
+        marker.scale.y = 0.1;
+        marker.scale.z = 0.1;
+        marker.color.a = 1.0;
+        marker.color.r = 0.380;
+        marker.color.g = 0.643;
+        marker.color.b = 0.678;
+
+        m_lookaheadMarkerPub.publish(marker);
     }
     
     void ReverseManoeuvre::payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg)
@@ -323,7 +356,7 @@ namespace csai
             point_count++;
         }
 
-        ROS_INFO("Loaded %d path points from CSV", point_count);
+        ROS_ERROR("Loaded %d path points from CSV", point_count);
         file.close();
     }
 
@@ -356,8 +389,9 @@ namespace csai
     {
         int closestIndex = -1;
         float minDistance = std::numeric_limits<float>::max(); // Initialised to inf
-
-        for (int i = 0; i < m_referencePath.size(); ++i)
+        
+        // Start searching from the last closest index for efficiency
+        for (int i = m_prevClosestIndex; i < m_referencePath.size(); ++i)
         {
             // Calculate Euclidean distance from current cart position to the path point
             float dx = cartState.x - m_referencePath[i].x;
@@ -371,6 +405,12 @@ namespace csai
             }
         }
 
+        // Update last closest index for next search
+        m_prevClosestIndex = closestIndex; 
+
+        ROS_INFO("Search started at %d, found closest index at: %d (Total path size: %zu)", 
+              m_prevClosestIndex, closestIndex, m_referencePath.size());
+        
         return closestIndex;
     }
 
@@ -379,6 +419,8 @@ namespace csai
     // ==========================================================
     void ReverseManoeuvre::maneuverStages(const ros::TimerEvent& event)
     {
+        updatePoses(); // Update cartWheelsState with current position
+
         switch (m_state)
         {
             case ManeuverState::IDLE:
@@ -388,18 +430,20 @@ namespace csai
             case ManeuverState::POSITIONING:
             {
                 // Monitor when the robot reaches the start position of the path
-        
+                
                 // Calculate distance from robot to start point
-                float dx = m_referencePath[0].x - m_robotState.x;
-                float dy = m_referencePath[0].y - m_robotState.y;
+                float dx = m_referencePath[0].x - m_cartWheelsState.x;
+                float dy = m_referencePath[0].y - m_cartWheelsState.y;
                 float distanceToStart = std::sqrt(dx * dx + dy * dy);
 
+                ROS_ERROR("distance to start: %.3f | m_cartWheelsState: (%.3f, %.3f)", distanceToStart, m_cartWheelsState.x, m_cartWheelsState.y);
+
                 // Check if close enough to start position (within 0.1 meters)
-                if (distanceToStart < 0.1) // Also check that gripper is closed to avoid false positives
+                if (distanceToStart < 0.5) // Also check that gripper is closed to avoid false positives
                 {
                     ROS_INFO("Reached start position. Transitioning to ALIGNING");
                     publishVelocityCommand(0.0, 0.0); 
-                    m_state = ManeuverState::ALIGNING; 
+                    m_state = ManeuverState::REVERSING; 
                 }
             }
             break;
@@ -408,7 +452,8 @@ namespace csai
             {
                 publishVelocityCommand(0.0, -1.0); // Rotate in place at a fixed speed for testing
                 ROS_WARN("Aligning... Current heading: %.2f degrees", m_robotState.heading * 180.0f / M_PI);
-                float orientationError = normalizeAngle(m_robotState.heading - m_initialOrientation);
+                //float orientationError = normalizeAngle(m_robotState.heading - m_initialOrientation);
+                float orientationError = normalizeAngle(m_robotState.heading - 1.57f);
                 if (fabs(orientationError) < 0.1) 
                 {
                     publishVelocityCommand(0.0, 0.0);
@@ -444,19 +489,26 @@ namespace csai
         // Obtain the point which has the minimum distance to the robot position
         int min_index = findClosestPathPoint(control_point);
         PathPoint closest_point = m_referencePath[min_index];
+
         PathPoint local_target = closest_point;
 
         // Search for the point in the path that is at least lookahead_distance away from the closest point
-        for (int i = min_index; i < m_referencePath.size(); ++i)
+        int i;
+        for (i = min_index; i < m_referencePath.size(); ++i)
         {
             float dist = std::sqrt(std::pow(m_referencePath[i].x - closest_point.x, 2) +
                                     std::pow(m_referencePath[i].y - closest_point.y, 2));
             if (dist >= m_lookaheadDist)
             {
                 local_target = m_referencePath[i];
+                m_prevLookaheadIndex = i; // Update last lookahead index for next search
                 break;
             }
+        
         }
+
+        // Visualize lookahead point in Rviz
+        visualizeLookaheadMarker(local_target);
 
         // Where the cart needs to face to hit the lookahead point
         float dx = local_target.x - control_point.x;
@@ -464,51 +516,24 @@ namespace csai
         float pathAngle = std::atan2(dy, dx);
 
         // dubious
-        float headingError = normalizeAngle(control_point.heading - pathAngle);
-        float kappa = 2.0f * std::sin(headingError) / m_lookaheadDist;
+        float headingError = normalizeAngle(pathAngle - control_point.heading);
+        float kappa = -2.0f * std::sin(headingError) / m_lookaheadDist;
 
-
-        // Should i calculate the cross track error or not
+        // Publish the cross-track error for monitoring
+        float cte = std::sqrt(dx * dx + dy * dy);
         std_msgs::Float32 msg;
-        msg.data = headingError;
+        msg.data = cte;
         m_crossTrackError.publish(msg);
 
-        // Convert to hitch reference
-        float gamma_ref = std::atan(1.3 * kappa);
+        ROS_WARN("Control point: (%.2f, %.2f) heading: %.2f degrees | curvature: %.2f", control_point.x, control_point.y, control_point.heading * 180.0f / M_PI, kappa);
+        
+        publishDebugValues(pathAngle, kappa, headingError);
 
-        return std::min(-m_maxGamma, std::max(gamma_ref, m_maxGamma));
+        return kappa;
     }
 
-    float ReverseManoeuvre::innerLoop(float gamma_ref, float dt)
-    {
-        ROS_WARN("gamma: %.3f, gamma_ref: %.3f", m_gripperAngle, gamma_ref);
-        float gamma = m_gripperAngle * DEG_TO_RAD;
-        float gamma_error = normalizeAngle(gamma_ref - gamma);
+    void ReverseManoeuvre::updatePoses(){
 
-  
-        float gamma_rate = 0.0f;
-        if (dt > 1e-3)
-            gamma_rate = (gamma - m_prevGamma) / dt;
-
-        m_prevGamma = gamma;
-
-        float k_p = 0.5f;
-        float k_d = 0.0f;
-
-        float w = k_p * gamma_error - k_d * gamma_rate;
-
-
-        ROS_INFO("gamma rate: %.3f, gamma error: %.3f, w: %.3f", gamma_rate, gamma_error, w);
-
-
-        publishDebugValues(gamma_ref, gamma, gamma_error);
-
-        return w;
-    }
-
-    void ReverseManoeuvre::pathFollowing(const ros::TimerEvent& event)
-    {
-        // ----------- Get current cart pose from TF -----------
         geometry_msgs::TransformStamped cartWheelsTF, cartBackTF;
         try
         {
@@ -523,18 +548,20 @@ namespace csai
         // Update cart variables
         updatePoseFromTF(cartWheelsTF, m_cartWheelsState);
         updatePoseFromTF(cartBackTF, m_cartBackState);
-        
+    }
+
+    void ReverseManoeuvre::pathFollowing(const ros::TimerEvent& event)
+    {
+        // ----------- Get current cart pose from TF -----------
+        updatePoses();
         double dt = (event.current_real - event.last_real).toSec();
 
         // ----------- Calculate reference heading -----------
-        //float gamma_ref = outerLoop(m_cartWheelsState);
+        float curvature = outerLoop(m_cartWheelsState);
+        m_reverseSpeed = -0.1; // Set a constant reverse speed for testing
+        float kp = 1.0f; // Proportional gain for steering control
+        float w = kp *m_reverseSpeed * curvature; // Pure pursuit control law for angular velocity
 
-        float gamma_ref = 0.05;
-
-        // ----------- Calculate control command -----------
-        float w = innerLoop(gamma_ref, dt);
-
-        
         // ----------- Execution and stop conditions -----------
 
         // Check if target reached (use cart back position)
@@ -542,7 +569,7 @@ namespace csai
         float dy_target = m_target.y - m_cartBackState.y;
         float distanceToTarget = std::sqrt(dx_target * dx_target + dy_target * dy_target);
         
-        if (distanceToTarget < 0.1)
+        if (distanceToTarget < 0.1 and fabs(m_gripperAngle) < 0.5f) // Check if close enough to target position and gripper is closed
         {
             ROS_INFO("Target reached. Stopping.");
             publishVelocityCommand(0.0, 0.0);
@@ -550,9 +577,6 @@ namespace csai
             return;
         }
 
-        m_reverseSpeed = -0.05; // Set a constant reverse speed for testing
-
-        ROS_WARN("Sending command: linear_x=%.3f, angular_z=%.3f, ", m_reverseSpeed, w);
         publishVelocityCommand(m_reverseSpeed, w);
         
     }

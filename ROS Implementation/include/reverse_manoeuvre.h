@@ -14,6 +14,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
+#include <visualization_msgs/Marker.h>
 #include <std_msgs/Float32MultiArray.h>
 #include <tf2_ros/buffer.h>
 #include <tf2/utils.h>
@@ -95,6 +96,7 @@ namespace csai
         ros::Publisher m_pathPub;
         ros::Publisher m_debugPub;
         ros::Publisher m_crossTrackError;
+        ros::Publisher m_lookaheadMarkerPub;
 
         // Required for movai twist to tricycle
         ros::Publisher m_cartWheelbasePub;     
@@ -107,6 +109,8 @@ namespace csai
         float m_reverseSpeed;
         float m_maxGamma;
         float m_prevGamma; 
+        int m_prevClosestIndex;
+        int m_prevLookaheadIndex;
 
         // Cart dimensions
         float m_cartLength, m_fixedWheelDist, m_gripperLength;
@@ -146,9 +150,9 @@ namespace csai
         void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
         void loadCartDimensions(const std::string& payload_id);
         void publishVelocityCommand(float linear_x, float angular_z);
-        void publishDebugValues(float gamma_ref, float gamma_error, float gamma);
+        void publishDebugValues(float value1, float value2, float value3);
+        void updatePoses(); 
         void maneuverStages(const ros::TimerEvent& event); 
-        float innerLoop(float gamma_ref, float dt);
         float outerLoop(const State& control_point);
         void pathFollowing(const ros::TimerEvent& event);
         void robotTfCb(const ros::TimerEvent& event);
@@ -156,6 +160,7 @@ namespace csai
         void updatePoseFromTF(const geometry_msgs::TransformStamped& transform, State& state);
         void loadCsvPath(const std::string file_path);
         void visualisePath(const std::vector<PathPoint>& path);
+        void visualizeLookaheadMarker(const PathPoint& point);
         int findClosestPathPoint(State cartState);
         float normalizeAngle(float angle);
 
