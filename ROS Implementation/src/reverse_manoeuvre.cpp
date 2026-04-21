@@ -32,7 +32,7 @@ namespace csai
         m_prevLookaheadIndex = 0; // Start searching for closest point from the beginning of the path
         
         
-        m_lookaheadDist = 0.6f; // Set a default lookahead distance (can be tuned based on performance)
+        m_lookaheadDist = 1.0f; // Set a default lookahead distance (can be tuned based on performance)
 
         // Frame names
         f_nhPriv.param<std::string>("world_frame", m_worldFrame, std::string("map"));
@@ -61,6 +61,8 @@ namespace csai
         m_gripperAngleFormatedPub = f_nh.advertise<std_msgs::Float64>("gripper_angle_formated", 1, true); // In Float64 instead of Float32
         m_debugPub = f_nh.advertise<std_msgs::Float32MultiArray>("debug_values", 10);
         m_lookaheadMarkerPub = f_nh.advertise<visualization_msgs::Marker>("lookahead_marker", 10);
+        m_pathAnglePub = f_nh.advertise<geometry_msgs::PoseStamped>("path_angle", 1);
+        m_headingPub = f_nh.advertise<geometry_msgs::PoseStamped>("heading", 1);
 
         // Latched topic sends it to new subscribers
         m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true); 
@@ -200,6 +202,25 @@ namespace csai
         debugMsg.data[1] = value2;
         debugMsg.data[2] = value3;
         m_debugPub.publish(debugMsg);
+    }
+
+    void ReverseManoeuvre::visualizeDebugPose(const PathPoint& target, float angle, ros::Publisher& pub)
+    {
+        geometry_msgs::PoseStamped poseMsg;
+        poseMsg.header.frame_id = m_worldFrame;
+        poseMsg.header.stamp = ros::Time::now();
+
+        // Position of the lookahead target
+        poseMsg.pose.position.x = target.x;
+        poseMsg.pose.position.y = target.y;
+        poseMsg.pose.position.z = 0.0; 
+
+        // Convert yaw angle to quaternion
+        tf2::Quaternion q;
+        q.setRPY(0, 0, angle);
+        poseMsg.pose.orientation = tf2::toMsg(q);
+
+        pub.publish(poseMsg);
     }
 
     void ReverseManoeuvre::visualizeLookaheadMarker(const PathPoint& point)
@@ -451,9 +472,9 @@ namespace csai
             case ManeuverState::ALIGNING: 
             {
                 publishVelocityCommand(0.0, -1.0); // Rotate in place at a fixed speed for testing
-                ROS_WARN("Aligning... Current heading: %.2f degrees", m_robotState.heading * 180.0f / M_PI);
+                ROS_WARN("Aligning... Current heading: %.2f degrees", m_cartWheelsState.heading * 180.0f / M_PI);
                 //float orientationError = normalizeAngle(m_robotState.heading - m_initialOrientation);
-                float orientationError = normalizeAngle(m_robotState.heading - 1.57f);
+                float orientationError = normalizeAngle(m_cartWheelsState.heading - 1.57f);
                 if (fabs(orientationError) < 0.1) 
                 {
                     publishVelocityCommand(0.0, 0.0);
@@ -513,10 +534,16 @@ namespace csai
         // Where the cart needs to face to hit the lookahead point
         float dx = local_target.x - control_point.x;
         float dy = local_target.y - control_point.y;
-        float pathAngle = std::atan2(dy, dx);
+        float pathAngle = std::atan2(-dy, -dx);
+
+        visualizeDebugPose(local_target, pathAngle, m_pathAnglePub);
+        PathPoint cp_as_point;
+        cp_as_point.x = control_point.x;
+        cp_as_point.y = control_point.y;
+        visualizeDebugPose(cp_as_point, control_point.heading, m_headingPub);
 
         // dubious
-        float headingError = normalizeAngle(pathAngle - control_point.heading);
+        float headingError = normalizeAngle(- control_point.heading + pathAngle);
         float kappa = -2.0f * std::sin(headingError) / m_lookaheadDist;
 
         // Publish the cross-track error for monitoring

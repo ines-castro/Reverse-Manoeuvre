@@ -95,6 +95,8 @@ namespace csai
         ros::Publisher m_cmdPub;
         ros::Publisher m_pathPub;
         ros::Publisher m_debugPub;
+        ros::Publisher m_pathAnglePub;
+        ros::Publisher m_headingPub;
         ros::Publisher m_crossTrackError;
         ros::Publisher m_lookaheadMarkerPub;
 
@@ -160,6 +162,7 @@ namespace csai
         void updatePoseFromTF(const geometry_msgs::TransformStamped& transform, State& state);
         void loadCsvPath(const std::string file_path);
         void visualisePath(const std::vector<PathPoint>& path);
+        void visualizeDebugPose(const PathPoint& target, float angle, ros::Publisher& pub);
         void visualizeLookaheadMarker(const PathPoint& point);
         int findClosestPathPoint(State cartState);
         float normalizeAngle(float angle);
