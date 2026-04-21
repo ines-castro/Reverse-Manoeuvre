@@ -56,118 +56,119 @@ struct State
     float heading;
 };
 
-struct CartDimensions
-{
-    float length;
-    float width;
-    float height;
-    float length_to_fixed_wheel;
-    float attach_offset;
-    float engage_bar_height;
-};
-
 namespace csai 
 {
-
     class ReverseManoeuvre 
     {
     public:
-        // Constructor
+        // Constructor & Destructor
         ReverseManoeuvre(ros::NodeHandle &f_nh, ros::NodeHandle &f_nhPriv);
-        // Destructor
         ~ReverseManoeuvre();
 
     private:
-
-        // --------------------------------
+        // ==========================================================
         // ROS COMMUNICATION
-        // --------------------------------
+        // ==========================================================
         ros::NodeHandle m_nh;
         ros::NodeHandle m_nhPriv;
+        
+        // TF
         tf2_ros::Buffer m_tfBuffer;
         tf2_ros::TransformListener m_tfListener; 
         tf2_ros::TransformBroadcaster m_tfBroadcaster;
+        
+        // Subscribers
         ros::Subscriber m_gripperAngleSub;
         ros::Subscriber m_payloadIdSub;
         ros::Subscriber m_triggerSub;
+        
+        // Timers
         ros::Timer m_tfTimer;
         ros::Timer m_controlTimer;
+        
+        // Publishers
         ros::Publisher m_cmdPub;
         ros::Publisher m_pathPub;
         ros::Publisher m_debugPub;
         ros::Publisher m_pathAnglePub;
         ros::Publisher m_headingPub;
-        ros::Publisher m_crossTrackError;
         ros::Publisher m_lookaheadMarkerPub;
-
-        // Required for movai twist to tricycle
         ros::Publisher m_cartWheelbasePub;     
-        ros::Publisher m_gripperAngleFormatedPub;
 
-
-        // ================================
-        // Configuration
-        // ================================
+        // ==========================================================
+        // STATE & CONFIGURATION
+        // ==========================================================
+        ManeuverState m_state;
+        bool m_debug;
+        bool m_cartDimensionsLoaded;
+        
+        // Control parameters
         float m_reverseSpeed;
-        float m_maxGamma;
-        float m_prevGamma; 
-        int m_prevClosestIndex;
-        int m_prevLookaheadIndex;
-
+        float m_goalTolerance;
+        float m_lookaheadDist;
+        float m_initialOrientation;
+        
         // Cart dimensions
-        float m_cartLength, m_fixedWheelDist, m_gripperLength;
-
-        // Controller parameters
-        float m_kDist, m_kTurn, m_kHitch, m_horizon, m_lookaheadDist;
-
+        float m_cartLength;
+        float m_fixedWheelDist;
+        float m_gripperLength;
+        
         // Frame names
-        std::string m_worldFrame, m_robotFrame, m_gripperFrame, m_cartWheelsFrame, m_cartBackFrame;
-        PathPoint m_target;
-
-        // ================================
-        // PARAMETERS
-        // ================================
-        ManeuverState m_state;  // Current state of the maneuver
-        ros::Time m_lastTime;
-        std::vector<PathPoint> m_referencePath;
+        std::string m_worldFrame;
+        std::string m_robotFrame;
+        std::string m_gripperFrame;
+        std::string m_cartWheelsFrame;
+        std::string m_cartBackFrame;
+        
+        // Payload configuration
         std::string m_payloadId;
         XmlRpc::XmlRpcValue m_payloadConfig;
-
-        // Controller parameters
-
+        
+        // Path tracking
+        std::vector<PathPoint> m_referencePath;
+        PathPoint m_target;
+        int m_prevClosestIndex;
+        
+        // State tracking
         float m_gripperAngle;
         State m_robotState;
         State m_cartWheelsState;
         State m_cartBackState;
-        float m_initialOrientation;
 
-        bool m_debug;
-        bool m_cartDimensionsLoaded;
+        // ==========================================================
+        // FUNCTION DECLARATIONS 
+        // ==========================================================
         
-        // ================================
-        // FUNCTIONS
-        // ================================
-        void triggerCb(const std_msgs::Bool::ConstPtr& msg);
-        void gripperAngleCb(const std_msgs::Float32::ConstPtr& msg);
-        void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
-        void loadCartDimensions(const std::string& payload_id);
-        void publishVelocityCommand(float linear_x, float angular_z);
-        void publishDebugValues(float value1, float value2, float value3);
-        void updatePoses(); 
-        void maneuverStages(const ros::TimerEvent& event); 
-        float outerLoop(const State& control_point);
-        void pathFollowing(const ros::TimerEvent& event);
+        // TF Operations
         void robotTfCb(const ros::TimerEvent& event);
         void sendOffsetTF(const std::string parent_frame, const std::string child_frame, float x_offset);
         void updatePoseFromTF(const geometry_msgs::TransformStamped& transform, State& state);
+        void updateCartPoses();
+        
+        // Required Information (callbacks & loading)
         void loadCsvPath(const std::string file_path);
-        void visualisePath(const std::vector<PathPoint>& path);
+        void gripperAngleCb(const std_msgs::Float32::ConstPtr& msg);
+        void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
+        void loadCartDimensions(const std::string& payload_id);
+        void triggerCb(const std_msgs::Bool::ConstPtr& msg);
+        
+        // Visualization & Debugging
+        void publishDebugValues(float value1, float value2, float value3);
         void visualizeDebugPose(const PathPoint& target, float angle, ros::Publisher& pub);
         void visualizeLookaheadMarker(const PathPoint& point);
-        int findClosestPathPoint(State cartState);
+        void visualisePath(const std::vector<PathPoint>& path);
+        
+        // Command Publishers
+        void publishVelocityCommand(float linear_x, float angular_z);
+        
+        // Path Following Utilities
         float normalizeAngle(float angle);
-
-
+        int findClosestPathPoint(State cartState);
+        float purePursuitControl(const State& control_point);
+        void pathFollowing(const ros::TimerEvent& event);
+        
+        // State Machine
+        void maneuverStages(const ros::TimerEvent& event);
     };
 
 } 
