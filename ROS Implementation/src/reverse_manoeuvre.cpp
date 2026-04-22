@@ -11,7 +11,8 @@ namespace csai
         : m_tfListener(m_tfBuffer),         // Initialize listener with buffer
           m_nh(f_nh),                       // Store the node handle
           m_nhPriv(f_nhPriv),               // Store the private node handle
-          m_cartDimensionsLoaded(false)    // Cart dimensions not loaded yet
+          m_cartDimensionsLoaded(false),    // Cart dimensions not loaded yet
+          m_prevClosestIndex(0)             // Start searching from beginning
     {
         // --- NODE PARAMETERS ------------------------------------
         f_nhPriv.param("reverse_speed", m_reverseSpeed, -0.1f);
@@ -27,7 +28,6 @@ namespace csai
         f_nhPriv.param("target_y", target_y, -3.0);
         
         m_initialOrientation = m_initialOrientation * DEG_TO_RAD;       // Convert from degrees to radians
-        m_prevClosestIndex = 0;                                         // Start searching for closest point from the beginning of the path
 
         // Frame names
         f_nhPriv.param<std::string>("world_frame", m_worldFrame, std::string("map"));
@@ -159,8 +159,9 @@ namespace csai
     // ==========================================================
     bool ReverseManoeuvre::generateReversePath(const State& initialState, const Point2D& target)
     {
-        // Clear any existing path
+        // Clear any existing path and reset search index
         m_referencePath.clear();
+        m_prevClosestIndex = 0;  
         
         // Check if cart dimensions are loaded
         if (!m_cartDimensionsLoaded)
@@ -173,15 +174,8 @@ namespace csai
         float turning_radius = 1.5;
         
         // Convert State to RobotState for geometry solver
+        ROS_WARN("Initial heading: %f degrees   ", initialState.heading * 180.0 / M_PI);
         RobotState solverState(initialState.x, initialState.y, initialState.heading);
-        
-        if (m_debug)
-        {
-            ROS_INFO("Generating reverse path:");
-            ROS_INFO("  Start: (%.3f, %.3f, %.1f°)", initialState.x, initialState.y, initialState.heading * 180.0 / M_PI);
-            ROS_INFO("  Target: (%.3f, %.3f)", target.x, target.y);
-            ROS_INFO("  Turning radius: %.3f m", turning_radius);
-        }
         
         // Create geometry solver and generate path
         GeometrySolver solver(solverState, target, turning_radius);
@@ -199,7 +193,14 @@ namespace csai
         // Convert Point2D waypoints to PathPoint format 
         m_referencePath.assign(waypoints.begin(), waypoints.end());
         
-        ROS_INFO("Successfully generated %lu path points", m_referencePath.size());
+        // Only log once, with all important info on one line
+        if (m_debug)
+        {
+            ROS_INFO("Path generated: %lu points | Start: (%.2f, %.2f, %.0f°) → Target: (%.2f, %.2f)", 
+                     m_referencePath.size(),
+                     initialState.x, initialState.y, initialState.heading * 180.0 / M_PI,
+                     target.x, target.y);
+        }
         
         // Set the target to the last point in the path
         m_target = m_referencePath.back();
@@ -331,7 +332,16 @@ namespace csai
             if (m_debug)
                 ROS_WARN("Trigger to stop received.");
             publishVelocityCommand(0.0, 0.0); // Stop the robot immediately
+            m_prevClosestIndex = 0;  // Ready for next run
             m_controlTimer.stop();
+            
+            // Clear all visualizations in RViz
+            m_referencePath.clear();
+            visualisePath(m_referencePath);  
+            PathPoint dummy_point(0.0, 0.0);  
+            visualizeLookaheadMarker(dummy_point, visualization_msgs::Marker::DELETE);
+            clearDebugPose(m_pathAnglePub);
+            clearDebugPose(m_headingPub);
         }
     }
 
@@ -368,7 +378,24 @@ namespace csai
         pub.publish(poseMsg);
     }
 
-    void ReverseManoeuvre::visualizeLookaheadMarker(const PathPoint &point)
+    void ReverseManoeuvre::clearDebugPose(ros::Publisher &pub)
+    {
+        geometry_msgs::PoseStamped poseMsg;
+        poseMsg.header.frame_id = m_worldFrame;
+        poseMsg.header.stamp = ros::Time::now();
+
+        // Publish pose at origin with identity orientation to clear the visualization
+        poseMsg.pose.position.x = 0.0;
+        poseMsg.pose.position.y = 0.0;
+        poseMsg.pose.position.z = 0.0;
+        poseMsg.pose.orientation.w = 1.0;
+
+        pub.publish(poseMsg);
+    }
+
+
+
+    void ReverseManoeuvre::visualizeLookaheadMarker(const PathPoint &point, int action)
     {
         visualization_msgs::Marker marker;
         marker.header.frame_id = m_worldFrame;
@@ -376,7 +403,7 @@ namespace csai
         marker.ns = "lookahead_point";
         marker.id = 0;
         marker.type = visualization_msgs::Marker::SPHERE;
-        marker.action = visualization_msgs::Marker::ADD;
+        marker.action = action;
 
         // Position
         marker.pose.position.x = point.x;
@@ -542,7 +569,6 @@ namespace csai
         float dy_target = m_target.y - m_cartBackState.y;
         float distanceToTarget = std::sqrt(dx_target * dx_target + dy_target * dy_target);
 
-        ROS_INFO("Goal distance: %.3f m, Gripper angle: %.1f°", distanceToTarget, m_gripperAngle);
         if (distanceToTarget < m_goalTolerance and fabs(m_gripperAngle) < 7.0f) // Check if close enough to target position and gripper is closed
         {
             ROS_INFO("Reverse manoeuvre completed successfully.");

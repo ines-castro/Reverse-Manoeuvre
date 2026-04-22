@@ -4,31 +4,22 @@
 #include <ros/ros.h>
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/TransformStamped.h>
-#include <tf2_msgs/TFMessage.h>
-#include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <std_msgs/Float32.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/Float32MultiArray.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
-#include <visualization_msgs/Marker.h>
-#include <std_msgs/Float32MultiArray.h>
 #include <tf2_ros/buffer.h>
-#include <tf2/utils.h>
-#include <ros/package.h>
-#include <movai_common/SceneDataArray.h>
+#include <visualization_msgs/Marker.h>
 #include <movai_common/PayloadInfo.h>
-#include <iostream>
-#include <fstream>
-#include <sstream>
 #include <vector>
 #include <string>
 #include <cmath>
 #include <limits>
-#include <yaml-cpp/yaml.h>
 #include "geometry_solver.h"
 
 constexpr float DEG_TO_RAD = M_PI / 180.0f;
@@ -154,7 +145,8 @@ namespace csai
         // Visualization & Debugging
         void publishDebugValues(float value1, float value2, float value3);
         void visualizeDebugPose(const PathPoint& target, float angle, ros::Publisher& pub);
-        void visualizeLookaheadMarker(const PathPoint& point);
+        void clearDebugPose(ros::Publisher& pub);
+        void visualizeLookaheadMarker(const PathPoint& point, int action = visualization_msgs::Marker::ADD);
         void visualisePath(const std::vector<PathPoint>& path);
         
         // Command Publishers
