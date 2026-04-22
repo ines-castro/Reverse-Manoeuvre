@@ -11,8 +11,7 @@ namespace csai
         : m_tfListener(m_tfBuffer),         // Initialize listener with buffer
           m_nh(f_nh),                       // Store the node handle
           m_nhPriv(f_nhPriv),               // Store the private node handle
-          m_cartDimensionsLoaded(false),    // Cart dimensions not loaded yet
-          m_state(ManeuverState::REVERSING) // Initialize state to IDLE
+          m_cartDimensionsLoaded(false)    // Cart dimensions not loaded yet
     {
         // --- NODE PARAMETERS ------------------------------------
         f_nhPriv.param("reverse_speed", m_reverseSpeed, -0.1f);
@@ -21,6 +20,11 @@ namespace csai
         f_nhPriv.param("gripper_length", m_gripperLength, 0.45f);
         f_nhPriv.param("initial_angle", m_initialOrientation, 37.0f);
         f_nhPriv.param("debug", m_debug, false);
+        
+        // Target position parameters
+        double target_x, target_y;
+        f_nhPriv.param("target_x", target_x, -3.0);
+        f_nhPriv.param("target_y", target_y, -3.0);
         
         m_initialOrientation = m_initialOrientation * DEG_TO_RAD;       // Convert from degrees to radians
         m_prevClosestIndex = 0;                                         // Start searching for closest point from the beginning of the path
@@ -42,8 +46,8 @@ namespace csai
         m_tfTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::robotTfCb, this);
         m_tfTimer.stop(); // Don't start until cart dimensions are loaded
 
-        m_controlTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::maneuverStages, this);
-        // m_controlTimer.stop();
+        m_controlTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::pathFollowing, this);
+        m_controlTimer.stop();
 
         // --- PUBLISHERS ------------------------------------
         m_cmdPub = f_nh.advertise<geometry_msgs::Twist>("cmd_vel", 0);
@@ -56,11 +60,7 @@ namespace csai
         // Latched topic sends it to new subscribers
         m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true);
 
-        std::string package_path = ros::package::getPath("reverse_manoeuvre_pkg");
-        std::string csv_path = package_path + "/config/path_points.csv";
-        loadCsvPath(csv_path);
-        m_target = m_referencePath.back();
-        visualisePath(m_referencePath);
+        m_target = Point2D(-3.01,-3.0); // Store the target position from parameters
 
         publishVelocityCommand(0.0, 0.0); // Ensure robot is stopped at startup
     }
@@ -157,41 +157,56 @@ namespace csai
     // ==========================================================
     // REQUIRED INFORMATION (comes from elsewhere)
     // ==========================================================
-    void ReverseManoeuvre::loadCsvPath(const std::string file_path)
+    bool ReverseManoeuvre::generateReversePath(const State& initialState, const Point2D& target)
     {
-        std::ifstream file(file_path); // Open the CSV file
-        // Verify that the file can be opened
-        if (!file.is_open())
+        // Clear any existing path
+        m_referencePath.clear();
+        
+        // Check if cart dimensions are loaded
+        if (!m_cartDimensionsLoaded)
         {
-            ROS_ERROR("Failed to open CSV file: %s", file_path.c_str());
-            return;
+            ROS_ERROR("Cannot generate path: Cart dimensions not loaded yet");
+            return false;
         }
-
-        std::string line;
-        std::getline(file, line);
-
-        int point_count = 0;
-        while (std::getline(file, line))
+        
+        // Calculate turning radius from cart dimensions
+        float turning_radius = 1.5;
+        
+        // Convert State to RobotState for geometry solver
+        RobotState solverState(initialState.x, initialState.y, initialState.heading);
+        
+        if (m_debug)
         {
-            std::stringstream iss(line);
-            std::string word;
-            PathPoint point; // Struct to hold parsed details
-
-            // Read x
-            std::getline(iss, word, ',');
-            point.x = std::stof(word);
-
-            // Read y
-            std::getline(iss, word, ',');
-            point.y = std::stof(word);
-
-            // Add the point to the reference path vector
-            m_referencePath.push_back(point);
-            point_count++;
+            ROS_INFO("Generating reverse path:");
+            ROS_INFO("  Start: (%.3f, %.3f, %.1f°)", initialState.x, initialState.y, initialState.heading * 180.0 / M_PI);
+            ROS_INFO("  Target: (%.3f, %.3f)", target.x, target.y);
+            ROS_INFO("  Turning radius: %.3f m", turning_radius);
         }
-
-        ROS_INFO("Successfully loaded %d path points from CSV: %s", point_count, file_path.c_str());
-        file.close();
+        
+        // Create geometry solver and generate path
+        GeometrySolver solver(solverState, target, turning_radius);
+        solver.setDebug(m_debug);
+        
+        // Generate waypoints with 5cm spacing
+        std::vector<Point2D> waypoints = solver.generatePath(0.05);
+        
+        if (waypoints.empty())
+        {
+            ROS_ERROR("Failed to generate reverse path");
+            return false;
+        }
+        
+        // Convert Point2D waypoints to PathPoint format 
+        m_referencePath.assign(waypoints.begin(), waypoints.end());
+        
+        ROS_INFO("Successfully generated %lu path points", m_referencePath.size());
+        
+        // Set the target to the last point in the path
+        m_target = m_referencePath.back();
+        
+        visualisePath(m_referencePath);
+        
+        return true;
     }
 
     void ReverseManoeuvre::gripperAngleCb(const std_msgs::Float32::ConstPtr &msg)
@@ -215,26 +230,24 @@ namespace csai
             if (m_debug)
                 ROS_INFO("Detected new payload ID: %s", new_payload_id.c_str());
             m_payloadId = new_payload_id;
-            loadCartDimensions(m_payloadId);
-
+            
             // Start TF timer after first successful cart dimensions load
-            if (m_cartDimensionsLoaded && !m_tfTimer.hasStarted())
-            {
+            if(loadCartDimensions(m_payloadId) and !m_tfTimer.hasStarted()){
                 m_tfTimer.start();
-                m_state = ManeuverState::POSITIONING; // Transition to positioning state
                 if (m_debug)
                     ROS_INFO("TF timer started after loading cart dimensions");
             }
+
         }
     }
 
-    void ReverseManoeuvre::loadCartDimensions(const std::string &payload_id)
+    bool ReverseManoeuvre::loadCartDimensions(const std::string &payload_id)
     {
         // If data loaded is not a struct, there is a problem somewhere
         if (!m_nhPriv.getParam("payload_config", m_payloadConfig) or m_payloadConfig.getType() != XmlRpc::XmlRpcValue::TypeStruct)
         {
             ROS_WARN("Config loaded has to be a struct! Current type: %d", m_payloadConfig.getType());
-            return;
+            return false;
         }
 
         try
@@ -246,7 +259,7 @@ namespace csai
                 if (!payload_data.hasMember("object_dimensions") || payload_data.getType() != XmlRpc::XmlRpcValue::TypeStruct)
                 {
                     ROS_ERROR("The payload configuration has to have key 'object_dimensions'");
-                    return;
+                    return false;
                 }
 
                 // Struct with payload dimensions
@@ -254,7 +267,7 @@ namespace csai
                 if (!cart_dimensions.hasMember("length_to_fixed_wheel") || !cart_dimensions.hasMember("width"))
                 {
                     ROS_ERROR("The payload configuration is missing required cart dimension parameters!");
-                    return;
+                    return false;
                 }
 
                 m_cartLength = (double)(cart_dimensions["length"]);
@@ -269,15 +282,19 @@ namespace csai
 
                 if (m_debug)
                     ROS_INFO("SUCCESS! Loaded: length=%.3f, wheel_dist=%.3f", m_cartLength, m_fixedWheelDist);
+                
+                return true;
             }
             else
             {
                 ROS_WARN("Configuration file doesn't have information regarding payload with id '%s'", payload_id.c_str());
+                return false;
             }
         }
         catch (const std::exception &e)
         {
             ROS_ERROR("Exception: %s", e.what());
+            return false;
         }
     }
 
@@ -289,9 +306,19 @@ namespace csai
             // Start the control loop if not already started
             if (!m_controlTimer.hasStarted() and m_cartDimensionsLoaded)
             {
-                m_controlTimer.start();
-                if (m_debug)
-                    ROS_INFO("Control timer started");
+                // Get the latest cart poses before starting the control loop
+                updateCartPoses();
+
+                // Convert PathPoint target to Point2D
+                Point2D targetPoint(m_target.x, m_target.y);
+                
+                // Generate reverse path
+                if (generateReversePath(m_cartWheelsState, targetPoint))
+                {
+                    m_controlTimer.start();
+                    if (m_debug)
+                        ROS_INFO("Successfully calculated reverse path. Control timer started.");
+                }
             }
             // The control loop needs the cart dimensions
             else if (!m_cartDimensionsLoaded)
@@ -515,7 +542,8 @@ namespace csai
         float dy_target = m_target.y - m_cartBackState.y;
         float distanceToTarget = std::sqrt(dx_target * dx_target + dy_target * dy_target);
 
-        if (distanceToTarget < m_goalTolerance and fabs(m_gripperAngle) < 3.0f) // Check if close enough to target position and gripper is closed
+        ROS_INFO("Goal distance: %.3f m, Gripper angle: %.1f°", distanceToTarget, m_gripperAngle);
+        if (distanceToTarget < m_goalTolerance and fabs(m_gripperAngle) < 7.0f) // Check if close enough to target position and gripper is closed
         {
             ROS_INFO("Reverse manoeuvre completed successfully.");
             publishVelocityCommand(0.0, 0.0);
@@ -524,72 +552,6 @@ namespace csai
         }
 
         publishVelocityCommand(m_reverseSpeed, w);
-    }
-
-    // ==========================================================
-    // STATE MACHINE (probably gonna dissapear when feature is complete)
-    // ==========================================================
-    void ReverseManoeuvre::maneuverStages(const ros::TimerEvent &event)
-    {
-        updateCartPoses(); // Update cartWheelsState with current position
-
-        switch (m_state)
-        {
-        case ManeuverState::IDLE:
-            // Do nothing, waiting for trigger
-            break;
-
-        case ManeuverState::POSITIONING:
-        {
-            // Monitor when the robot reaches the start position of the path
-
-            // Calculate distance from robot to start point
-            float dx = m_referencePath[0].x - m_cartWheelsState.x;\
-            float dy = m_referencePath[0].y - m_cartWheelsState.y;
-            float distanceToStart = std::sqrt(dx * dx + dy * dy);
-
-            // Check if close enough to start position (within 0.1 meters)
-            if (distanceToStart < 0.5) // Also check that gripper is closed to avoid false positives
-            {
-                ROS_INFO("Reached start position. Transitioning to ALIGNING");
-                publishVelocityCommand(0.0, 0.0);
-                m_state = ManeuverState::REVERSING;
-            }
-        }
-        break;
-
-        case ManeuverState::ALIGNING:
-        {
-            publishVelocityCommand(0.0, -1.0); // Rotate in place at a fixed speed for testing
-            ROS_WARN("Aligning... Current heading: %.2f degrees", m_cartWheelsState.heading * 180.0f / M_PI);
-            // float orientationError = normalizeAngle(m_robotState.heading - m_initialOrientation);
-            float orientationError = normalizeAngle(m_cartWheelsState.heading - 1.57f);
-            if (fabs(orientationError) < 0.1)
-            {
-                publishVelocityCommand(0.0, 0.0);
-                ROS_INFO("Aligned with initial angle.");
-                m_state = ManeuverState::PICKING;
-            }
-        }
-        break;
-
-        case ManeuverState::PICKING:
-            if (fabs(m_gripperAngle) < 0.5f) // Check if gripper is closed (simulate picking)
-            {
-                ROS_INFO("Simulated picking complete. Transitioning to REVERSING.");
-                m_state = ManeuverState::REVERSING;
-            }
-            break;
-
-        case ManeuverState::REVERSING:
-            pathFollowing(event);
-            break;
-
-        case ManeuverState::COMPLETED:
-            publishVelocityCommand(0.0, 0.0);
-            m_controlTimer.stop();
-            break;
-        }
     }
 
 } // namespace csai

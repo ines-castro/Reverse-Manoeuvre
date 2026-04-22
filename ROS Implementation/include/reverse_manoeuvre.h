@@ -29,24 +29,23 @@
 #include <cmath>
 #include <limits>
 #include <yaml-cpp/yaml.h>
+#include "geometry_solver.h"
 
 constexpr float DEG_TO_RAD = M_PI / 180.0f;
-
-// States for the reverse maneuver state machine
-enum class ManeuverState
-{
-    IDLE,              // Waiting for trigger
-    POSITIONING,       // Moving robot to start position
-    ALIGNING,          // Rotating robot to face backward along path
-    PICKING,           // Simulate picking up the payload (could be extended to check gripper status)
-    REVERSING,         // Actively reversing along path
-    COMPLETED          // Reached target
-};
 
 struct PathPoint
 {
     float x;
     float y;
+    
+    // Default constructor
+    PathPoint() : x(0.0f), y(0.0f) {}
+    
+    // Constructor from x, y
+    PathPoint(float x_, float y_) : x(x_), y(y_) {}
+    
+    // Constructor from Point2D (for seamless conversion)
+    PathPoint(const Point2D& p) : x(p.x), y(p.y) {}
 };
 
 struct State
@@ -98,7 +97,6 @@ namespace csai
         // ==========================================================
         // STATE & CONFIGURATION
         // ==========================================================
-        ManeuverState m_state;
         bool m_debug;
         bool m_cartDimensionsLoaded;
         
@@ -147,9 +145,10 @@ namespace csai
         
         // Required Information (callbacks & loading)
         void loadCsvPath(const std::string file_path);
+        bool generateReversePath(const State& initialState, const Point2D& target);
         void gripperAngleCb(const std_msgs::Float32::ConstPtr& msg);
         void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
-        void loadCartDimensions(const std::string& payload_id);
+        bool loadCartDimensions(const std::string& payload_id);
         void triggerCb(const std_msgs::Bool::ConstPtr& msg);
         
         // Visualization & Debugging
@@ -166,9 +165,7 @@ namespace csai
         int findClosestPathPoint(State cartState);
         float purePursuitControl(const State& control_point);
         void pathFollowing(const ros::TimerEvent& event);
-        
-        // State Machine
-        void maneuverStages(const ros::TimerEvent& event);
+
     };
 
 } 
