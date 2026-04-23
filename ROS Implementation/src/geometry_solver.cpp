@@ -37,6 +37,19 @@ bool GeometrySolver::calculatePathGeometry()
         
         return true;
     }
+
+    // -------- Not enough distance to turn --------
+    if (m_path_state != PathState::STRAIGHT_LINE) {
+
+        // Verify if the distance is sufficient
+        if ((m_target - m_state.position()).norm() < 2 * m_turning_radius) {
+            if (m_debug) {
+                std::cout << "Error: Insufficient distance to align. Have some common sense." << std::endl;
+            }
+            m_path_state = PathState::FAILED;
+            return false;
+        }
+    }
     
     // -------- Vertical or horizontal approach --------
     bool use_vertical_target = (dy >= dx);
