@@ -7,7 +7,7 @@ GeometrySolver::GeometrySolver(const RobotState& state, const Point2D& target, d
     : m_state(state)
     , m_target(target)
     , m_turning_radius(turning_radius)
-    , m_debug(false)
+    , m_debug(true)
     , m_overshoot_case(false)
     , m_geometry_calculated(false)
 {
@@ -18,41 +18,109 @@ bool GeometrySolver::calculatePathGeometry()
     double m_heading = std::tan(m_state.theta);
     double b_heading = m_state.y - m_heading * m_state.x;
     
+    // Determine target line orientation based on displacement to target
+    double dx = std::abs(m_target.x - m_state.x);
+    double dy = std::abs(m_target.y - m_state.y);
+    bool use_vertical_target = (dy > dx);  // More vertical displacement → vertical target line
+    
+    double m_target_line, b_target_line;
+    if (use_vertical_target) {
+        // Vertical line at target x-coordinate
+        m_target_line = INF;
+        b_target_line = m_target.x;
+        if (m_debug) std::cout << "Using VERTICAL target line at x = " << m_target.x << " (Δx=" << dx << ", Δy=" << dy << ")" << std::endl;
+    } else {
+        // Horizontal line at target y-coordinate
+        m_target_line = 0.0;
+        b_target_line = m_target.y;
+        if (m_debug) std::cout << "Using HORIZONTAL target line at y = " << m_target.y << " (Δx=" << dx << ", Δy=" << dy << ")" << std::endl;
+    }
+    
     // -------- Mandatory turning circle --------
     double circle_radius = m_turning_radius;
     Point2D vertex, circle_center;
     double calc_radius;
     
-    if (!getTangentCircle(m_heading, b_heading, INF, m_target.x,
+    if (!getTangentCircle(m_heading, b_heading, m_target_line, b_target_line,
                          m_state.position(), m_target,
                          vertex, circle_center, calc_radius, circle_radius))
     {
         if (m_debug) std::cout << "Failed to calculate tangent circle" << std::endl;
         return false;
     }
+
+    std::cout << "Calculated circle center: (" << circle_center.x << ", " << circle_center.y << ") radius: " << calc_radius << std::endl;
     
     // Calculate tangent points to the circle
-    Point2D tangent_heading, tangent_target;
-    Point2D temp_point;  // Unused second tangent point
+    Point2D tangent_heading_1, tangent_heading_2;
+    Point2D tangent_target_1, tangent_target_2;
     
     int num_tangents_heading = getIntersectionLineCircle(m_heading, b_heading, 
                                                          circle_center, circle_radius,
-                                                         tangent_heading, temp_point);
+                                                         tangent_heading_1, tangent_heading_2);
     
-    int num_tangents_target = getIntersectionLineCircle(INF, m_target.x,
+    int num_tangents_target = getIntersectionLineCircle(m_target_line, b_target_line,
                                                         circle_center, circle_radius,
-                                                        tangent_target, temp_point);
+                                                        tangent_target_1, tangent_target_2);
     
     if (num_tangents_heading < 1 || num_tangents_target < 1) {
         if (m_debug) std::cout << "Failed to find tangent points" << std::endl;
         return false;
     }
     
+    // Select correct tangent points for REVERSE motion
+    Point2D tangent_heading, tangent_target;
+    Point2D heading_dir(std::cos(m_state.theta), std::sin(m_state.theta));
+    
+    if (num_tangents_heading == 2) {
+        // For REVERSE: pick the tangent point BEHIND the robot
+        Point2D to_tangent_1 = tangent_heading_1 - m_state.position();
+        Point2D to_tangent_2 = tangent_heading_2 - m_state.position();
+        
+        // Dot product: negative = behind (reverse direction)
+        double dot1 = heading_dir.dot(to_tangent_1);
+        double dot2 = heading_dir.dot(to_tangent_2);
+        
+        if (m_debug) {
+            std::cout << "Heading tangent selection:" << std::endl;
+            std::cout << "  T1: (" << tangent_heading_1.x << ", " << tangent_heading_1.y << ") dot=" << dot1 << std::endl;
+            std::cout << "  T2: (" << tangent_heading_2.x << ", " << tangent_heading_2.y << ") dot=" << dot2 << std::endl;
+        }
+        
+        // Pick the one MORE behind (more negative dot product)
+        tangent_heading = (dot1 < dot2) ? tangent_heading_1 : tangent_heading_2;
+        
+        if (m_debug) {
+            std::cout << "  Chose: (" << tangent_heading.x << ", " << tangent_heading.y << ")" << std::endl;
+        }
+    } else {
+        tangent_heading = tangent_heading_1;
+    }
+    
+    if (num_tangents_target == 2) {
+
+        // For target tangent: pick the one that's on the same side of the circle as heading tangent
+        Point2D center_to_heading = tangent_heading - circle_center;
+        Point2D center_to_target1 = tangent_target_1 - circle_center;
+        Point2D center_to_target2 = tangent_target_2 - circle_center;
+        
+        // Use cross product to determine if points are on same side of circle
+        double cross1 = center_to_heading.x * center_to_target1.y - center_to_heading.y * center_to_target1.x;
+        double cross2 = center_to_heading.x * center_to_target2.y - center_to_heading.y * center_to_target2.x;
+        
+        // Pick the one on the same side (same sign of cross product)
+        tangent_target = (cross1 * cross2 > 0) ? 
+                        ((std::abs(cross1) < std::abs(cross2)) ? tangent_target_1 : tangent_target_2) :
+                        tangent_target_1;
+    } else {
+        tangent_target = tangent_target_1;
+    }
+    
     // -------- Overshoot logic --------
-    Point2D heading_vector(std::cos(m_state.theta), std::sin(m_state.theta));
     Point2D offset_vector = m_state.position() - tangent_heading;
     
-    double dot_product = heading_vector.dot(offset_vector);
+    double dot_product = heading_dir.dot(offset_vector);
+
     
     if (dot_product < 0) {
         // Overshoot case
@@ -67,12 +135,22 @@ bool GeometrySolver::calculatePathGeometry()
         double offset = offset_vector.norm();
         
         // Derive the center of the second circle geometrically
-        double x_c = m_target.x - circle_radius;
-        double dx_sq = (x_c - circle_center.x) * (x_c - circle_center.x);
-        double dy_sq = std::max(0.0, (2 * circle_radius) * (2 * circle_radius) - dx_sq);
-        double dy = std::sqrt(dy_sq);
-        
-        double y_c = circle_center.y - dy;
+        double x_c, y_c;
+        if (use_vertical_target) {
+            // Vertical target: second circle center is left of target x
+            x_c = m_target.x - circle_radius;
+            double dx_sq = (x_c - circle_center.x) * (x_c - circle_center.x);
+            double dy_sq = std::max(0.0, (2 * circle_radius) * (2 * circle_radius) - dx_sq);
+            double dy = std::sqrt(dy_sq);
+            y_c = circle_center.y - dy;
+        } else {
+            // Horizontal target: second circle center is below target y
+            y_c = m_target.y - circle_radius;
+            double dy_sq = (y_c - circle_center.y) * (y_c - circle_center.y);
+            double dx_sq = std::max(0.0, (2 * circle_radius) * (2 * circle_radius) - dy_sq);
+            double dx = std::sqrt(dx_sq);
+            x_c = circle_center.x - dx;
+        }
         
         // Second circle with same radius as the first one
         Point2D circle2_center(x_c, y_c);
@@ -81,9 +159,13 @@ bool GeometrySolver::calculatePathGeometry()
         Point2D circles_intersection = (circle2_center + circle_center) / 2.0;
         
         // Calculate exit point
-        Point2D exit_point;
-        getIntersectionLineCircle(INF, m_target.x, circle2_center, circle_radius,
-                                 exit_point, temp_point);
+        Point2D exit_point_1, exit_point_2;
+        int num_exit = getIntersectionLineCircle(m_target_line, b_target_line, circle2_center, circle_radius,
+                                                exit_point_1, exit_point_2);
+        
+        // Choose the exit point closer to the intersection
+        Point2D exit_point = (num_exit == 2 && (exit_point_2 - circles_intersection).norm() < (exit_point_1 - circles_intersection).norm()) 
+                            ? exit_point_2 : exit_point_1;
         
         // Store internal waypoints
         m_waypoints.initial = m_state.position();
@@ -256,13 +338,17 @@ bool GeometrySolver::getTangentCircle(double m1, double b1, double m2, double b2
                                      Point2D& vertex, Point2D& circle_center, 
                                      double& circle_radius, double radius)
 {
+
+    std::cout << "Calculating tangent circle for lines: " << std::endl;
+    std::cout << "  Line 1: y = " << m1 << "*x + " << b1 << std::endl;
+    std::cout << "  Line 2: y = " << m2 << "*x + " << b2 << std::endl;
     // Get intersection of the two lines
     vertex = getIntersectionLines(m1, b1, m2, b2);
     
     if (std::isinf(vertex.x) || std::isinf(vertex.y)) {
         return false;
     }
-    
+    std::cout << "Vertex (intersection): (" << vertex.x << ", " << vertex.y << ")" << std::endl;
     // Direction vectors
     Point2D vec_1 = A - vertex;
     Point2D vec_2 = B - vertex;
@@ -272,6 +358,7 @@ bool GeometrySolver::getTangentCircle(double m1, double b1, double m2, double b2
     
     // Bisector
     Point2D bisector = vec_1_unit + vec_2_unit;
+    std::cout << "Bisector before normalization: (" << bisector.x << ", " << bisector.y << ")" << std::endl;
     Point2D bisector_unit = bisector.normalize();
     
     // Calculate the angle between bisector and line
