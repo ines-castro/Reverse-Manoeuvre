@@ -8,8 +8,7 @@ GeometrySolver::GeometrySolver(const RobotState& state, const Point2D& target, d
     , m_target(target)
     , m_turning_radius(turning_radius)
     , m_debug(true)
-    , m_overshoot_case(false)
-    , m_geometry_calculated(false)
+    , m_path_state(PathState::UNINITIALIZED)
 {
 }
 
@@ -21,20 +20,45 @@ bool GeometrySolver::calculatePathGeometry()
     // Determine target line orientation based on displacement to target
     double dx = std::abs(m_target.x - m_state.x);
     double dy = std::abs(m_target.y - m_state.y);
-    bool use_vertical_target = (dy > dx);  // More vertical displacement → vertical target line
+    
+    // -------- Special case: Aligned on one axis --------
+    if (dx < EPSILON || dy < EPSILON) {
+        if (m_debug) {
+            std::cout << "Straight line case detected, no turning needed" << std::endl;
+        }
+        
+        // Simple straight line from initial to target
+        m_path_state = PathState::STRAIGHT_LINE;
+        m_waypoints.initial = m_state.position();
+        m_waypoints.turning = m_state.position();  // No turning point
+        m_waypoints.exit_point = m_target;
+        m_waypoints.target = m_target;
+        m_centers.clear();  // No circles needed
+        
+        return true;
+    }
+    
+    // -------- Vertical or horizontal approach --------
+    bool use_vertical_target = (dy >= dx);
     
     double m_target_line, b_target_line;
     if (use_vertical_target) {
         // Vertical line at target x-coordinate
+        std::cout << "Using vertical target line at x = " << m_target.x << std::endl;
         m_target_line = INF;
         b_target_line = m_target.x;
-        if (m_debug) std::cout << "Using VERTICAL target line at x = " << m_target.x << " (Δx=" << dx << ", Δy=" << dy << ")" << std::endl;
     } else {
         // Horizontal line at target y-coordinate
+        std::cout << "Using horizontal target line at y = " << m_target.y << std::endl;
         m_target_line = 0.0;
         b_target_line = m_target.y;
-        if (m_debug) std::cout << "Using HORIZONTAL target line at y = " << m_target.y << " (Δx=" << dx << ", Δy=" << dy << ")" << std::endl;
     }
+
+    // -------- Check heading direction for reverse maneuver --------
+    Point2D heading_dir(std::cos(m_state.theta), std::sin(m_state.theta));
+    std::cout << "Heading direction: (" << heading_dir.x << ", " << heading_dir.y << ")" << std::endl;
+    std::cout << "Target direction: (" << (m_target.x - m_state.x) << ", " << (m_target.y - m_state.y) << ")" << std::endl;
+    std::cout << "Angle between target and heading: " << (m_state.theta - std::atan2(dy, dx)) * 180.0 / M_PI << "°   " << std::endl;
     
     // -------- Mandatory turning circle --------
     double circle_radius = m_turning_radius;
@@ -49,8 +73,18 @@ bool GeometrySolver::calculatePathGeometry()
         return false;
     }
 
-    std::cout << "Calculated circle center: (" << circle_center.x << ", " << circle_center.y << ") radius: " << calc_radius << std::endl;
-    
+    // Check if the vertex is beyond the target
+    Point2D to_target = m_target - m_state.position();
+    Point2D to_vertex = vertex - m_state.position();
+
+    if (to_vertex.norm() > to_target.norm()) {
+        if (m_debug) {
+            std::cout << "Intersection point is beyond the target! Please adjust the initial angle." << std::endl;
+        }
+        m_path_state = PathState::FAILED;
+        return false;
+    }
+
     // Calculate tangent points to the circle
     Point2D tangent_heading_1, tangent_heading_2;
     Point2D tangent_target_1, tangent_target_2;
@@ -68,10 +102,9 @@ bool GeometrySolver::calculatePathGeometry()
         return false;
     }
     
-    // Select correct tangent points for REVERSE motion
+    // Select correct tangent points for reverse motion
     Point2D tangent_heading, tangent_target;
-    Point2D heading_dir(std::cos(m_state.theta), std::sin(m_state.theta));
-    
+
     if (num_tangents_heading == 2) {
         // For REVERSE: pick the tangent point BEHIND the robot
         Point2D to_tangent_1 = tangent_heading_1 - m_state.position();
@@ -80,19 +113,10 @@ bool GeometrySolver::calculatePathGeometry()
         // Dot product: negative = behind (reverse direction)
         double dot1 = heading_dir.dot(to_tangent_1);
         double dot2 = heading_dir.dot(to_tangent_2);
-        
-        if (m_debug) {
-            std::cout << "Heading tangent selection:" << std::endl;
-            std::cout << "  T1: (" << tangent_heading_1.x << ", " << tangent_heading_1.y << ") dot=" << dot1 << std::endl;
-            std::cout << "  T2: (" << tangent_heading_2.x << ", " << tangent_heading_2.y << ") dot=" << dot2 << std::endl;
-        }
-        
+
         // Pick the one MORE behind (more negative dot product)
         tangent_heading = (dot1 < dot2) ? tangent_heading_1 : tangent_heading_2;
-        
-        if (m_debug) {
-            std::cout << "  Chose: (" << tangent_heading.x << ", " << tangent_heading.y << ")" << std::endl;
-        }
+
     } else {
         tangent_heading = tangent_heading_1;
     }
@@ -112,6 +136,7 @@ bool GeometrySolver::calculatePathGeometry()
         tangent_target = (cross1 * cross2 > 0) ? 
                         ((std::abs(cross1) < std::abs(cross2)) ? tangent_target_1 : tangent_target_2) :
                         tangent_target_1;
+
     } else {
         tangent_target = tangent_target_1;
     }
@@ -121,14 +146,13 @@ bool GeometrySolver::calculatePathGeometry()
     
     double dot_product = heading_dir.dot(offset_vector);
 
-    
     if (dot_product < 0) {
         // Overshoot case
         if (m_debug) {
             std::cout << "Overshoot case detected - robot already past entry point" << std::endl;
         }
         
-        m_overshoot_case = true;
+        m_path_state = PathState::OVERSHOOT;
         
         // Shift the center by the distance to entry point
         circle_center = circle_center + offset_vector;
@@ -180,11 +204,11 @@ bool GeometrySolver::calculatePathGeometry()
         
     } else {
         // Normal case - no overshoot
-        m_overshoot_case = false;
+        m_path_state = PathState::NORMAL;
         
         Point2D entry_point = tangent_heading;
         Point2D exit_point = tangent_target;
-        
+
         // Store internal waypoints
         m_waypoints.initial = m_state.position();
         m_waypoints.turning = entry_point;
@@ -196,18 +220,30 @@ bool GeometrySolver::calculatePathGeometry()
         m_centers.push_back(circle_center);
     }
     
-    m_geometry_calculated = true;
-    
     return true;
 }
 
 Point2D GeometrySolver::getPathPoint(double s)
 {
+    // Handle straight line case
+    if (m_path_state == PathState::STRAIGHT_LINE) {
+        double distance_to_target = (m_waypoints.target - m_waypoints.initial).norm();
+        s = std::max(0.0, std::min(s, distance_to_target));
+        
+        if (distance_to_target < EPSILON) {
+            return m_waypoints.target;
+        }
+        
+        Point2D direction = (m_waypoints.target - m_waypoints.initial) / distance_to_target;
+        return Point2D(m_waypoints.initial.x + direction.x * s, 
+                      m_waypoints.initial.y + direction.y * s);
+    }
+    
     double distance_to_turn = 0.0;
     double phi_start, phi_end, phi_start2, phi_end2;
     double arc_length, arc_length2;
     
-    if (m_overshoot_case) {
+    if (m_path_state == PathState::OVERSHOOT) {
         distance_to_turn = 0.0;
         
         // First arc angles
@@ -292,13 +328,18 @@ std::vector<Point2D> GeometrySolver::generatePath(double spacing)
     std::vector<Point2D> path;
     
     // Calculate geometry if not already done
-    if (!m_geometry_calculated) {
+    if (m_path_state == PathState::UNINITIALIZED) {
         if (!calculatePathGeometry()) {
             if (m_debug) {
                 std::cout << "Failed to calculate path geometry" << std::endl;
             }
+            m_path_state = PathState::FAILED;
             return path; // Empty path
         }
+    }
+    // Check if calculation failed
+    if (m_path_state == PathState::FAILED) {
+        return path; // Empty path
     }
     
     // Calculate total path length
@@ -339,16 +380,12 @@ bool GeometrySolver::getTangentCircle(double m1, double b1, double m2, double b2
                                      double& circle_radius, double radius)
 {
 
-    std::cout << "Calculating tangent circle for lines: " << std::endl;
-    std::cout << "  Line 1: y = " << m1 << "*x + " << b1 << std::endl;
-    std::cout << "  Line 2: y = " << m2 << "*x + " << b2 << std::endl;
     // Get intersection of the two lines
     vertex = getIntersectionLines(m1, b1, m2, b2);
     
     if (std::isinf(vertex.x) || std::isinf(vertex.y)) {
         return false;
     }
-    std::cout << "Vertex (intersection): (" << vertex.x << ", " << vertex.y << ")" << std::endl;
     // Direction vectors
     Point2D vec_1 = A - vertex;
     Point2D vec_2 = B - vertex;
@@ -358,7 +395,6 @@ bool GeometrySolver::getTangentCircle(double m1, double b1, double m2, double b2
     
     // Bisector
     Point2D bisector = vec_1_unit + vec_2_unit;
-    std::cout << "Bisector before normalization: (" << bisector.x << ", " << bisector.y << ")" << std::endl;
     Point2D bisector_unit = bisector.normalize();
     
     // Calculate the angle between bisector and line
@@ -492,8 +528,11 @@ double GeometrySolver::calculatePathLength() const
 {
     double distance_to_turn = 0.0;
     double arc_length, arc_length2 = 0.0;
-    
-    if (m_overshoot_case) {
+
+    if (m_path_state == PathState::STRAIGHT_LINE) {
+        return (m_waypoints.target - m_waypoints.initial).norm();
+
+    } else if (m_path_state == PathState::OVERSHOOT) {
         // First arc
         double phi_start = std::atan2(m_waypoints.initial.y - m_centers[0].y, m_waypoints.initial.x - m_centers[0].x);
         double phi_end = std::atan2(m_waypoints.turning.y - m_centers[0].y, m_waypoints.turning.x - m_centers[0].x);
@@ -505,7 +544,8 @@ double GeometrySolver::calculatePathLength() const
             double phi_end2 = std::atan2(m_waypoints.exit_point.y - m_centers[1].y, m_waypoints.exit_point.x - m_centers[1].x);
             arc_length2 = m_turning_radius * std::abs(angleDiff(phi_start2, phi_end2));
         }
-    } else {
+
+    } else {  // PathState::NORMAL
         distance_to_turn = (m_waypoints.initial - m_waypoints.turning).norm();
 
         double phi_start = std::atan2(m_waypoints.turning.y - m_centers[0].y, m_waypoints.turning.x - m_centers[0].x);

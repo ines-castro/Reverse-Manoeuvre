@@ -71,6 +71,16 @@ struct Waypoints
     Point2D target;
 };
 
+// Path state enumeration
+enum class PathState
+{
+    UNINITIALIZED,      // Geometry not yet calculated
+    STRAIGHT_LINE,      // Simple straight line (dx=0 or dy=0)
+    NORMAL,             // Normal reverse with single arc
+    OVERSHOOT,          // Overshoot case with two arcs
+    FAILED              // Calculation failed (impossible geometry)
+};
+
 class GeometrySolver
 {
 public:
@@ -160,10 +170,9 @@ private:
     bool m_debug;
     
     // Cached geometry results
+    PathState m_path_state;
     Waypoints m_waypoints;
     std::vector<Point2D> m_centers;
-    bool m_overshoot_case;
-    bool m_geometry_calculated;
     
     // Constants
     static constexpr double INF = std::numeric_limits<double>::infinity();
