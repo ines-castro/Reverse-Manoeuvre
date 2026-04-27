@@ -8,7 +8,9 @@
 #include <std_msgs/Float32.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/String.h>
 #include <std_msgs/Float32MultiArray.h>
+#include <nlohmann/json.hpp>  // For JSON parsing in startCb
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -71,6 +73,8 @@ namespace csai
         ros::Subscriber m_gripperAngleSub;
         ros::Subscriber m_payloadIdSub;
         ros::Subscriber m_triggerSub;
+        ros::Subscriber m_cancelSub;
+        ros::Subscriber m_startSub;
         
         // Timers
         ros::Timer m_tfTimer;
@@ -116,6 +120,7 @@ namespace csai
         // Path tracking
         std::vector<PathPoint> m_referencePath;
         PathPoint m_target;
+        PathPoint m_entryPoint;  
         int m_prevClosestIndex;
         
         // State tracking
@@ -140,7 +145,8 @@ namespace csai
         void gripperAngleCb(const std_msgs::Float32::ConstPtr& msg);
         void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
         bool loadCartDimensions(const std::string& payload_id);
-        void triggerCb(const std_msgs::Bool::ConstPtr& msg);
+        void cancelCb(const std_msgs::Bool::ConstPtr &msg);
+        void startCb(const std_msgs::String::ConstPtr &msg);
         
         // Visualization & Debugging
         void publishDebugValues(float value1, float value2, float value3);

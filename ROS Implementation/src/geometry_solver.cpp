@@ -50,22 +50,35 @@ bool GeometrySolver::calculatePathGeometry()
             return false;
         }
     }
-    
-    // -------- Vertical or horizontal approach --------
-    bool use_vertical_target = (dy >= dx);
-    
+
+    // -------- Target line calculation --------
     double m_target_line, b_target_line;
-    if (use_vertical_target) {
-        // Vertical line at target x-coordinate
-        std::cout << "Using vertical target line at x = " << m_target.x << std::endl;
-        m_target_line = INF;
-        b_target_line = m_target.x;
+    
+    if (std::abs(m_target.theta) > EPSILON) {
+        m_path_state = PathState::ANGLED_APPROACH;
+        // Use target angle when specified
+        m_target_line = std::tan(m_target.theta);
+        b_target_line = m_target.y - m_target_line * m_target.x;
+        std::cout << "Using target line with angle " << m_target.theta * 180.0 / M_PI << "° (slope = " << m_target_line << ")" << std::endl;
     } else {
-        // Horizontal line at target y-coordinate
-        std::cout << "Using horizontal target line at y = " << m_target.y << std::endl;
-        m_target_line = 0.0;
-        b_target_line = m_target.y;
+        // Fall back to vertical/horizontal approach when target angle is 0.0
+        bool use_vertical_target = (dy >= dx);
+        
+        if (use_vertical_target) {
+            // Vertical line at target x-coordinate
+            std::cout << "Using vertical target line at x = " << m_target.x << std::endl;
+            m_target_line = INF;
+            b_target_line = m_target.x;
+        } else {
+            // Horizontal line at target y-coordinate
+            std::cout << "Using horizontal target line at y = " << m_target.y << std::endl;
+            m_target_line = 0.0;
+            b_target_line = m_target.y;
+        }
     }
+    
+    // Determine if we're approaching more vertically or horizontally (for legacy circle calculation)
+    bool use_vertical_target = (dy >= dx);
 
     // -------- Check heading direction for reverse maneuver --------
     Point2D heading_dir(std::cos(m_state.theta), std::sin(m_state.theta));
@@ -324,9 +337,17 @@ Point2D GeometrySolver::getPathPoint(double s)
     else if (s < path_length) {
         double s_final = s - distance_to_turn - arc_length - arc_length2;
         
-        Point2D v = (m_waypoints.target - m_waypoints.exit_point) / distance_to_target;
-        x = m_waypoints.exit_point.x + v.x * s_final;
-        y = m_waypoints.exit_point.y + v.y * s_final;
+        if (m_path_state == PathState::ANGLED_APPROACH) {
+            // For angled approach, use the target angle direction
+            Point2D target_direction(std::cos(m_target.theta), std::sin(m_target.theta));
+            x = m_waypoints.exit_point.x + target_direction.x * s_final;
+            y = m_waypoints.exit_point.y + target_direction.y * s_final;
+        } else {
+            // For normal, overshoot, and straight line cases, go directly to target
+            Point2D v = (m_waypoints.target - m_waypoints.exit_point) / distance_to_target;
+            x = m_waypoints.exit_point.x + v.x * s_final;
+            y = m_waypoints.exit_point.y + v.y * s_final;
+        }
     }
     else {
         x = m_waypoints.target.x;

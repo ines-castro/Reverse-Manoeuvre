@@ -40,7 +40,8 @@ namespace csai
         // --- SUBSCRIBERS ------------------------------------
         m_gripperAngleSub = f_nh.subscribe("gripper_angle", 1, &ReverseManoeuvre::gripperAngleCb, this);
         m_payloadIdSub = f_nh.subscribe("payload_info", 1, &ReverseManoeuvre::payloadIdCb, this);
-        m_triggerSub = f_nh.subscribe("trigger", 1, &ReverseManoeuvre::triggerCb, this);
+        m_cancelSub = f_nh.subscribe("cancel", 1, &ReverseManoeuvre::cancelCb, this);
+        m_startSub = f_nh.subscribe("reverse_cmd", 1, &ReverseManoeuvre::startCb, this);
 
         // --- TIMERS ------------------------------------
         m_tfTimer = f_nh.createTimer(ros::Duration(0.1), &ReverseManoeuvre::robotTfCb, this);
@@ -60,7 +61,7 @@ namespace csai
         // Latched topic sends it to new subscribers
         m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true);
 
-        m_target = Point2D(-3.01,-3.0); // Store the target position from parameters
+        m_target = Point2D(-7, 2); // Store the target position from parameters
 
         publishVelocityCommand(0.0, 0.0); // Ensure robot is stopped at startup
     }
@@ -196,10 +197,7 @@ namespace csai
         // Only log once, with all important info on one line
         if (m_debug)
         {
-            ROS_INFO("Path generated: %lu points | Start: (%.2f, %.2f, %.0f°) → Target: (%.2f, %.2f)", 
-                     m_referencePath.size(),
-                     initialState.x, initialState.y, initialState.heading * 180.0 / M_PI,
-                     target.x, target.y);
+            ROS_INFO("Path generated");
         }
         
         // Set the target to the last point in the path
@@ -219,8 +217,6 @@ namespace csai
     {
         if (msg->id_candidates.empty())
         {
-            if (m_debug)
-                ROS_WARN("Received PayloadInfo but id_candidates is empty!");
             return;
         }
 
@@ -299,20 +295,62 @@ namespace csai
         }
     }
 
-    void ReverseManoeuvre::triggerCb(const std_msgs::Bool::ConstPtr &msg)
+    void ReverseManoeuvre::cancelCb(const std_msgs::Bool::ConstPtr &msg)
     {
-        // When trigger is requested
+        // When cancel is requested
         if (msg->data)
         {
+            if (m_debug)
+                ROS_WARN("Cancel request received.");
+            publishVelocityCommand(0.0, 0.0); // Stop the robot immediately
+            m_prevClosestIndex = 0;  // Ready for next run
+            m_controlTimer.stop();
+            
+            // Clear all visualizations in RViz
+            m_referencePath.clear();
+            visualisePath(m_referencePath);  
+            PathPoint dummy_point(0.0, 0.0);  
+            visualizeLookaheadMarker(dummy_point, visualization_msgs::Marker::DELETE);
+            clearDebugPose(m_pathAnglePub);
+            clearDebugPose(m_headingPub);
+        }
+    }
+
+    void ReverseManoeuvre::startCb(const std_msgs::String::ConstPtr &msg)
+    {
+        ROS_ERROR("Received start command with data: %s", msg->data.c_str());
+        // The message received contains start and end point
+        try 
+        {
+            // Parse the string into a JSON object
+            auto j = nlohmann::json::parse(msg->data);
+
+            // Check if it's a Start command
+            if (j.contains("target") && j["target"].is_array())
+            {
+                m_target.x = j["target"][0];
+                m_target.y = j["target"][1];
+            }
+
+            if (j.contains("entry_point") && j["entry_point"].is_array())
+            {
+                m_entryPoint.x = j["entry_point"][0];
+                m_entryPoint.y = j["entry_point"][1];
+            }
+
+            ROS_WARN("Start command received. Target: (%.2f, %.2f) | TIMER STARTED: %s", m_target.x, m_target.y, m_controlTimer.hasStarted() ? "YES" : "NO");
+
             // Start the control loop if not already started
             if (!m_controlTimer.hasStarted() and m_cartDimensionsLoaded)
             {
+
+                ROS_ERROR("Starting the control timer");
                 // Get the latest cart poses before starting the control loop
                 updateCartPoses();
 
                 // Convert PathPoint target to Point2D
                 Point2D targetPoint(m_target.x, m_target.y);
-                
+
                 // Generate reverse path
                 if (generateReversePath(m_cartWheelsState, targetPoint))
                 {
@@ -326,23 +364,13 @@ namespace csai
             {
                 ROS_WARN("Cannot start control loop: Cart dimensions not loaded yet!");
             }
+           
         }
-        else
+        catch (nlohmann::json::exception& e)
         {
-            if (m_debug)
-                ROS_WARN("Trigger to stop received.");
-            publishVelocityCommand(0.0, 0.0); // Stop the robot immediately
-            m_prevClosestIndex = 0;  // Ready for next run
-            m_controlTimer.stop();
-            
-            // Clear all visualizations in RViz
-            m_referencePath.clear();
-            visualisePath(m_referencePath);  
-            PathPoint dummy_point(0.0, 0.0);  
-            visualizeLookaheadMarker(dummy_point, visualization_msgs::Marker::DELETE);
-            clearDebugPose(m_pathAnglePub);
-            clearDebugPose(m_headingPub);
+            ROS_ERROR("Failed to parse reverse_info string: %s", e.what());
         }
+
     }
 
     // ==========================================================

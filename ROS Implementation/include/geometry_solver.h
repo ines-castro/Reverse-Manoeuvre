@@ -12,9 +12,10 @@ struct Point2D
 {
     double x;
     double y;
+    double theta;  // Optional angle for target points (default 0)
     
-    Point2D() : x(0.0), y(0.0) {}
-    Point2D(double x_, double y_) : x(x_), y(y_) {}
+    Point2D() : x(0.0), y(0.0), theta(0.0) {}
+    Point2D(double x_, double y_, double theta_ = 0.0) : x(x_), y(y_), theta(theta_) {}
     
     Point2D operator+(const Point2D& other) const {
         return Point2D(x + other.x, y + other.y);
@@ -76,6 +77,7 @@ enum class PathState
 {
     UNINITIALIZED,      // Geometry not yet calculated
     STRAIGHT_LINE,      // Simple straight line (dx=0 or dy=0)
+    ANGLED_APPROACH,    // Approach with specified target angle
     NORMAL,             // Normal reverse with single arc
     OVERSHOOT,          // Overshoot case with two arcs
     FAILED              // Calculation failed (impossible geometry)
