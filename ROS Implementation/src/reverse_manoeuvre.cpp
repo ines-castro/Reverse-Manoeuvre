@@ -52,6 +52,7 @@ namespace csai
 
         // --- PUBLISHERS ------------------------------------
         m_cmdPub = f_nh.advertise<geometry_msgs::Twist>("cmd_vel", 0);
+        m_statusPub = f_nh.advertise<reverse_manoeuvre::ReverseStatus>("status", 10);
         m_cartWheelbasePub = f_nh.advertise<std_msgs::Float64>("cart_wheelbase", 1, true);                // To not get it sfrom ioboard sim
         m_debugPub = f_nh.advertise<std_msgs::Float32MultiArray>("debug_values", 10);
         m_lookaheadMarkerPub = f_nh.advertise<visualization_msgs::Marker>("lookahead_marker", 10);
@@ -61,9 +62,8 @@ namespace csai
         // Latched topic sends it to new subscribers
         m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true);
 
-        m_target = Point2D(-7, 2); // Store the target position from parameters
-
         publishVelocityCommand(0.0, 0.0); // Ensure robot is stopped at startup
+        m_lookaheadDist = 1.7f;
     }
 
     // ==========================================================
@@ -295,29 +295,24 @@ namespace csai
         }
     }
 
-    void ReverseManoeuvre::cancelCb(const std_msgs::Bool::ConstPtr &msg)
+    void ReverseManoeuvre::cancelCb(const std_msgs::Empty::ConstPtr &msg)
     {
         // When cancel is requested
-        if (msg->data)
-        {
-            if (m_debug)
-                ROS_WARN("Cancel request received.");
-            publishVelocityCommand(0.0, 0.0); // Stop the robot immediately
-            m_prevClosestIndex = 0;  // Ready for next run
-            m_controlTimer.stop();
-            
-            // Clear all visualizations in RViz
-            m_referencePath.clear();
-            visualisePath(m_referencePath);  
-            PathPoint dummy_point(0.0, 0.0);  
-            visualizeLookaheadMarker(dummy_point, visualization_msgs::Marker::DELETE);
-            clearDebugPose(m_pathAnglePub);
-            clearDebugPose(m_headingPub);
-        }
+        publishStatus(Status::CANCELLED, "Reverse manoeuvre cancelled by user.");
+        if (m_debug)
+            ROS_WARN("Cancel request received.");
+        publishVelocityCommand(0.0, 0.0); // Stop the robot immediately
+        m_prevClosestIndex = 0;  // Ready for next run
+        m_controlTimer.stop();
+        
+        // Clear all visualizations in RViz
+        clearAll();
+    
     }
 
     void ReverseManoeuvre::startCb(const std_msgs::String::ConstPtr &msg)
     {
+        float target_angle = 0.0;
         ROS_ERROR("Received start command with data: %s", msg->data.c_str());
         // The message received contains start and end point
         try 
@@ -330,6 +325,7 @@ namespace csai
             {
                 m_target.x = j["target"][0];
                 m_target.y = j["target"][1];
+                target_angle = j["target"][2];
             }
 
             if (j.contains("entry_point") && j["entry_point"].is_array())
@@ -343,20 +339,22 @@ namespace csai
             // Start the control loop if not already started
             if (!m_controlTimer.hasStarted() and m_cartDimensionsLoaded)
             {
-
-                ROS_ERROR("Starting the control timer");
                 // Get the latest cart poses before starting the control loop
                 updateCartPoses();
 
                 // Convert PathPoint target to Point2D
-                Point2D targetPoint(m_target.x, m_target.y);
+                Point2D targetPoint(m_target.x, m_target.y, target_angle);
 
                 // Generate reverse path
                 if (generateReversePath(m_cartWheelsState, targetPoint))
                 {
+                    publishStatus(Status::RUNNING, "Reverse manoeuvre started.");
                     m_controlTimer.start();
                     if (m_debug)
                         ROS_INFO("Successfully calculated reverse path. Control timer started.");
+                } else 
+                {
+                    publishStatus(Status::FAILED, "Failed to generate reverse path.");
                 }
             }
             // The control loop needs the cart dimensions
@@ -421,8 +419,6 @@ namespace csai
         pub.publish(poseMsg);
     }
 
-
-
     void ReverseManoeuvre::visualizeLookaheadMarker(const PathPoint &point, int action)
     {
         visualization_msgs::Marker marker;
@@ -475,6 +471,17 @@ namespace csai
         m_pathPub.publish(pathMsg);
     }
 
+    void ReverseManoeuvre::clearAll()
+    {
+        // Clear all visualizations in RViz
+        m_referencePath.clear();
+        visualisePath(m_referencePath);  
+        PathPoint dummy_point(0.0, 0.0);  
+        visualizeLookaheadMarker(dummy_point, visualization_msgs::Marker::DELETE);
+        clearDebugPose(m_pathAnglePub);
+        clearDebugPose(m_headingPub);
+    }
+
     // ==========================================================
     // COMMAND PUBLISHERS
     // ==========================================================
@@ -494,6 +501,22 @@ namespace csai
 
         // Publish the command
         m_cmdPub.publish(cmdMsg);
+    }
+
+    void ReverseManoeuvre::publishStatus(Status status, const std::string& error_description)
+    {
+        // Log type according to severity of the status
+        if (status == Status::FAILED || status == Status::CANCELLED){
+            ROS_ERROR("%s", error_description.c_str());
+        } else if (m_debug) {
+            ROS_INFO("%s", error_description.c_str());
+        }
+
+        // Send the message to the handler
+        reverse_manoeuvre::ReverseStatus statusMsg;
+        statusMsg.status = statusToString(status);
+        statusMsg.error_description = error_description;
+        m_statusPub.publish(statusMsg);
     }
 
     // ==========================================================
@@ -544,8 +567,8 @@ namespace csai
         int i;
         for (i = min_index; i < m_referencePath.size(); ++i)
         {
-            float dist = std::sqrt(std::pow(m_referencePath[i].x - closest_point.x, 2) +
-                                   std::pow(m_referencePath[i].y - closest_point.y, 2));
+            float dist = std::sqrt(std::pow(m_referencePath[i].x - control_point.x, 2) +
+                                   std::pow(m_referencePath[i].y - control_point.y, 2));
             if (dist >= m_lookaheadDist)
             {
                 local_target = m_referencePath[i];
@@ -576,6 +599,9 @@ namespace csai
         float headingError = normalizeAngle(pathAngle - control_point.heading);
         float kappa = -2.0f * std::sin(headingError) / m_lookaheadDist;
 
+        ROS_INFO("Path Angle: %.2f | Current Heading: %.2f | Error: %.2f", 
+                pathAngle, control_point.heading, headingError);
+
         // Values for rqt plot
         publishDebugValues(pathAngle, kappa, headingError);
 
@@ -591,6 +617,7 @@ namespace csai
         // ----------- Calculate reference heading -----------
         float curvature = purePursuitControl(m_cartWheelsState);
         float w = m_reverseSpeed * curvature; // Pure pursuit control law for angular velocity
+        ROS_WARN("Curvature: %.3f | Angular Velocity: %.3f", curvature, w);
 
         // ----------- Execution and stop conditions -----------
         float dx_target = m_target.x - m_cartBackState.x;
@@ -599,7 +626,7 @@ namespace csai
 
         if (distanceToTarget < m_goalTolerance and fabs(m_gripperAngle) < 7.0f) // Check if close enough to target position and gripper is closed
         {
-            ROS_INFO("Reverse manoeuvre completed successfully.");
+            publishStatus(Status::SUCCESS, "Reverse manoeuvre completed successfully.");
             publishVelocityCommand(0.0, 0.0);
             m_controlTimer.stop();
             return;

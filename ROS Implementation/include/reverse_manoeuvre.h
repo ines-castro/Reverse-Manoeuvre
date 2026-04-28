@@ -7,9 +7,10 @@
 #include <nav_msgs/Path.h>
 #include <std_msgs/Float32.h>
 #include <std_msgs/Float64.h>
-#include <std_msgs/Bool.h>
+#include <std_msgs/Empty.h>
 #include <std_msgs/String.h>
 #include <std_msgs/Float32MultiArray.h>
+#include <reverse_manoeuvre/ReverseStatus.h>  // Custom message
 #include <nlohmann/json.hpp>  // For JSON parsing in startCb
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -25,6 +26,27 @@
 #include "geometry_solver.h"
 
 constexpr float DEG_TO_RAD = M_PI / 180.0f;
+
+enum Status
+{
+    OFF,
+    RUNNING,
+    SUCCESS,
+    FAILED,
+    CANCELLED
+};
+
+// Convert Status enum to string for ROS message
+inline std::string statusToString(Status status) {
+    switch (status) {
+        case OFF: return "OFF";
+        case RUNNING: return "RUNNING";
+        case SUCCESS: return "SUCCESS";
+        case FAILED: return "FAILED";
+        case CANCELLED: return "CANCELLED";
+        default: return "UNKNOWN";
+    }
+}
 
 struct PathPoint
 {
@@ -82,6 +104,7 @@ namespace csai
         
         // Publishers
         ros::Publisher m_cmdPub;
+        ros::Publisher m_statusPub;
         ros::Publisher m_pathPub;
         ros::Publisher m_debugPub;
         ros::Publisher m_pathAnglePub;
@@ -145,7 +168,7 @@ namespace csai
         void gripperAngleCb(const std_msgs::Float32::ConstPtr& msg);
         void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
         bool loadCartDimensions(const std::string& payload_id);
-        void cancelCb(const std_msgs::Bool::ConstPtr &msg);
+        void cancelCb(const std_msgs::Empty::ConstPtr &msg);
         void startCb(const std_msgs::String::ConstPtr &msg);
         
         // Visualization & Debugging
@@ -154,9 +177,11 @@ namespace csai
         void clearDebugPose(ros::Publisher& pub);
         void visualizeLookaheadMarker(const PathPoint& point, int action = visualization_msgs::Marker::ADD);
         void visualisePath(const std::vector<PathPoint>& path);
+        void clearAll();
         
         // Command Publishers
         void publishVelocityCommand(float linear_x, float angular_z);
+        void publishStatus(Status status, const std::string& error_description = "");
         
         // Path Following Utilities
         float normalizeAngle(float angle);

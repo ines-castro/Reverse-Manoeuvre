@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(reverse_manoeuvre_pkg)
+project(reverse_manoeuvre)
 
 ## Find catkin and any dependencies
 find_package(catkin REQUIRED COMPONENTS
@@ -11,14 +11,28 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_ros
   tf2_geometry_msgs
   movai_common
+  message_runtime
+  message_generation
 )
 
 ## Find yaml-cpp (not a catkin package)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(YAML_CPP REQUIRED yaml-cpp)
 
+add_message_files(
+  FILES
+  ReverseStatus.msg
+)
+
+generate_messages(
+  DEPENDENCIES std_msgs
+)
+
 ## Declare a catkin package
-catkin_package()
+catkin_package(
+  CATKIN_DEPENDS message_runtime std_msgs
+)
+
 
 ## Include headers
 include_directories(
@@ -37,6 +51,9 @@ add_executable(reverse_node
     src/geometry_solver.cpp
 )
 
+add_dependencies(reverse_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+
 ## Link libraries
 target_link_libraries(reverse_node
   ${catkin_LIBRARIES}
@@ -51,10 +68,6 @@ install(TARGETS reverse_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-
-install(DIRECTORY config/
-  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
 )
 
 # install(DIRECTORY launch
