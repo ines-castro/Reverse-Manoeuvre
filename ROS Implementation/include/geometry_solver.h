@@ -7,6 +7,9 @@
 #include <iostream>
 #include <algorithm>
 
+// Constants
+constexpr double ANGLE_THRESHOLD = 3.0;  // Degrees - below this use straight line approach
+
 // Simple 2D point structure
 struct Point2D
 {

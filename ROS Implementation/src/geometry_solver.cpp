@@ -54,14 +54,15 @@ bool GeometrySolver::calculatePathGeometry()
     // -------- Target line calculation --------
     double m_target_line, b_target_line;
     
-    if (std::abs(m_target.theta) > EPSILON) {
+    if (std::abs(m_target.theta) > ANGLE_THRESHOLD * M_PI / 180.0) {
         m_path_state = PathState::ANGLED_APPROACH;
-        // Use target angle when specified
+        // Use target angle when specified and above threshold
         m_target_line = std::tan(m_target.theta);
         b_target_line = m_target.y - m_target_line * m_target.x;
         std::cout << "Using target line with angle " << m_target.theta * 180.0 / M_PI << "° (slope = " << m_target_line << ")" << std::endl;
+    
     } else {
-        // Fall back to vertical/horizontal approach when target angle is 0.0
+        
         bool use_vertical_target = (dy >= dx);
         
         if (use_vertical_target) {
@@ -177,8 +178,8 @@ bool GeometrySolver::calculatePathGeometry()
         if (m_debug) {
             std::cout << "Overshoot case detected - robot already past entry point" << std::endl;
         }
-        
-        m_path_state = PathState::OVERSHOOT;
+
+        std::cout << "before overshoot the path state is " << static_cast<int>(m_path_state) << std::endl;
         
         // Shift the center by the distance to entry point
         circle_center = circle_center + offset_vector;
@@ -186,21 +187,44 @@ bool GeometrySolver::calculatePathGeometry()
         
         // Derive the center of the second circle geometrically
         double x_c, y_c;
-        if (use_vertical_target) {
-            // Vertical target: second circle center is left of target x
-            x_c = m_target.x - circle_radius;
-            double dx_sq = (x_c - circle_center.x) * (x_c - circle_center.x);
-            double dy_sq = std::max(0.0, (2 * circle_radius) * (2 * circle_radius) - dx_sq);
-            double dy = std::sqrt(dy_sq);
-            y_c = circle_center.y - dy;
-        } else {
-            // Horizontal target: second circle center is below target y
-            y_c = m_target.y - circle_radius;
-            double dy_sq = (y_c - circle_center.y) * (y_c - circle_center.y);
-            double dx_sq = std::max(0.0, (2 * circle_radius) * (2 * circle_radius) - dy_sq);
-            double dx = std::sqrt(dx_sq);
-            x_c = circle_center.x - dx;
+        
+        if (m_path_state == PathState::ANGLED_APPROACH) {
+            // For angled targets: calculate second circle center based on target angle
+            Point2D target_direction(std::cos(m_target.theta), std::sin(m_target.theta));
+            Point2D target_normal(-std::sin(m_target.theta), std::cos(m_target.theta)); // perpendicular
+            
+            // Move from target point along the normal by circle_radius distance
+            Point2D circle2_center_calc = Point2D(m_target.x, m_target.y) + target_normal * circle_radius;
+            x_c = circle2_center_calc.x;
+            y_c = circle2_center_calc.y;
+            
+            if (m_debug) {
+                std::cout << "Angled overshoot: second circle center at (" << x_c << ", " << y_c << ")" << std::endl;
+            }
+            
+        } else if (m_path_state == PathState::ANGLED_APPROACH) {
+            
+            if(use_vertical_target) {
+                // Vertical target: second circle center is left of target x
+                x_c = m_target.x - circle_radius;
+                double dx_sq = (x_c - circle_center.x) * (x_c - circle_center.x);
+                double dy_sq = std::max(0.0, (2 * circle_radius) * (2 * circle_radius) - dx_sq);
+                double dy = std::sqrt(dy_sq);
+                y_c = circle_center.y - dy;
+
+            } else {
+                // Horizontal target: second circle center is below target y
+                y_c = m_target.y - circle_radius;
+                double dy_sq = (y_c - circle_center.y) * (y_c - circle_center.y);
+                double dx_sq = std::max(0.0, (2 * circle_radius) * (2 * circle_radius) - dy_sq);
+                double dx = std::sqrt(dx_sq);
+                x_c = circle_center.x - dx;
+            }
+
         }
+
+
+        m_path_state = PathState::OVERSHOOT;
         
         // Second circle with same radius as the first one
         Point2D circle2_center(x_c, y_c);
