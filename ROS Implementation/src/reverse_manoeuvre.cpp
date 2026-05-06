@@ -215,7 +215,7 @@ namespace csai
 
     void ReverseManoeuvre::payloadIdCb(const movai_common::PayloadInfo::ConstPtr &msg)
     {
-        if (msg->id_candidates.empty())
+        if (msg->id_candidates.empty() or msg->with_load == false)
         {
             return;
         }
@@ -313,7 +313,6 @@ namespace csai
     void ReverseManoeuvre::startCb(const std_msgs::String::ConstPtr &msg)
     {
         float target_angle = 0.0;
-        ROS_ERROR("Received start command with data: %s", msg->data.c_str());
         // The message received contains start and end point
         try 
         {
@@ -360,7 +359,7 @@ namespace csai
             // The control loop needs the cart dimensions
             else if (!m_cartDimensionsLoaded)
             {
-                ROS_WARN("Cannot start control loop: Cart dimensions not loaded yet!");
+                publishStatus(Status::FAILED, "Cannot start control loop: Cart dimensions not loaded yet!");
             }
            
         }
@@ -400,21 +399,6 @@ namespace csai
         tf2::Quaternion q;
         q.setRPY(0, 0, angle);
         poseMsg.pose.orientation = tf2::toMsg(q);
-
-        pub.publish(poseMsg);
-    }
-
-    void ReverseManoeuvre::clearDebugPose(ros::Publisher &pub)
-    {
-        geometry_msgs::PoseStamped poseMsg;
-        poseMsg.header.frame_id = m_worldFrame;
-        poseMsg.header.stamp = ros::Time::now();
-
-        // Publish pose at origin with identity orientation to clear the visualization
-        poseMsg.pose.position.x = 0.0;
-        poseMsg.pose.position.y = 0.0;
-        poseMsg.pose.position.z = 0.0;
-        poseMsg.pose.orientation.w = 1.0;
 
         pub.publish(poseMsg);
     }
@@ -478,8 +462,8 @@ namespace csai
         visualisePath(m_referencePath);  
         PathPoint dummy_point(0.0, 0.0);  
         visualizeLookaheadMarker(dummy_point, visualization_msgs::Marker::DELETE);
-        clearDebugPose(m_pathAnglePub);
-        clearDebugPose(m_headingPub);
+        m_pathAnglePub.shutdown();
+        m_headingPub.shutdown();
     }
 
     // ==========================================================
@@ -628,7 +612,9 @@ namespace csai
         {
             publishStatus(Status::SUCCESS, "Reverse manoeuvre completed successfully.");
             publishVelocityCommand(0.0, 0.0);
+            clearAll();     // Clear debug visualizations
             m_controlTimer.stop();
+            m_tfTimer.stop(); // Stop publishing cart TF transforms
             return;
         }
 
