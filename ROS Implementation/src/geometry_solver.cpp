@@ -12,6 +12,7 @@ GeometrySolver::GeometrySolver(const RobotState& state, const Point2D& target, d
 {
 }
 
+
 bool GeometrySolver::calculatePathGeometry()
 {
     double m_heading = std::tan(m_state.theta);
@@ -53,10 +54,16 @@ bool GeometrySolver::calculatePathGeometry()
 
     // -------- Target line calculation --------
     double m_target_line, b_target_line;
-    
-    if (std::abs(m_target.theta) > ANGLE_THRESHOLD * M_PI / 180.0) {
+
+    std::cout << "Target angle: " << m_target.theta * 180.0 / M_PI << "°" << std::endl;
+
+    if (!isAngleNearAxis(m_target.theta)) {
+
+        std::cout << "Target angle is not near any axis, using target angle for approach" << std::endl;
+
+        // Use target angle when not close to any axis
         m_path_state = PathState::ANGLED_APPROACH;
-        // Use target angle when specified and above threshold
+        
         m_target_line = std::tan(m_target.theta);
         b_target_line = m_target.y - m_target_line * m_target.x;
         std::cout << "Using target line with angle " << m_target.theta * 180.0 / M_PI << "° (slope = " << m_target_line << ")" << std::endl;
@@ -422,6 +429,24 @@ std::vector<Point2D> GeometrySolver::generatePath(double spacing)
 }
 
 // ========== Utility Functions Implementation ==========
+
+bool GeometrySolver::isAngleNearAxis(double theta) {
+
+    double threshold_rad = ANGLE_THRESHOLD * M_PI / 180.0;
+
+    double s = std::sin(theta);
+    double c = std::cos(theta);
+
+    // Close to X axis: cos near ±1, sin near 0
+    if (std::abs(c) > 1.0 - threshold_rad && std::abs(s) < threshold_rad)
+        return true;
+    // Close to Y axis: sin near ±1, cos near 0
+    if (std::abs(s) > 1.0 - threshold_rad && std::abs(c) < threshold_rad)
+        return true;
+
+    return false;
+}
+
 
 double GeometrySolver::angleDiff(double a, double b) const
 {
