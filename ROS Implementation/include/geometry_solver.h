@@ -7,9 +7,6 @@
 #include <iostream>
 #include <algorithm>
 
-// Constants
-constexpr double ANGLE_THRESHOLD = 3.0;  // Degrees - below this use straight line approach
-
 // Simple 2D point structure
 struct Point2D
 {
@@ -97,78 +94,13 @@ public:
      */
     GeometrySolver(const RobotState& state, const Point2D& target, double turning_radius);
     
-    /**
-     * @brief Generate discrete waypoints along the entire path
-     * @param spacing Distance between waypoints (in meters)
-     * @return Vector of waypoints along the path (empty if failed)
-     */
+
     std::vector<Point2D> generatePath(double spacing = 0.05);
-    
-    // Setters for debugging
     void setDebug(bool debug) { m_debug = debug; }
     
 private:
-    // ========== Internal Path Calculation ==========
-    
-    /**
-     * @brief Calculate the complete path geometry (internal)
-     * @return true if calculation successful
-     */
-    bool calculatePathGeometry();
-    
-    /**
-     * @brief Get a point on the path at a specific distance from start
-     * @param s Distance traveled along path
-     * @return Point on path at distance s
-     */
-    Point2D getPathPoint(double s);
-    
-    // ========== Utility Functions ==========
-    
-    /**
-     * @brief Normalize angle difference to [-pi, pi]
-     */
-    double angleDiff(double a, double b) const;
-    
-    /**
-     * @brief Get center of circle tangent to two lines
-     * @param m1, b1 First line: y = m1*x + b1 (use inf for vertical)
-     * @param m2, b2 Second line: y = m2*x + b2 (use inf for vertical)
-     * @param A, B Points defining direction
-     * @param radius Desired circle radius (optional)
-     * @return vertex, circle_center, circle_radius
-     */
-    bool getTangentCircle(double m1, double b1, double m2, double b2,
-                         const Point2D& A, const Point2D& B,
-                         Point2D& vertex, Point2D& circle_center, 
-                         double& circle_radius, double radius = -1.0);
-    
-    /**
-     * @brief Get intersection point of two lines
-     * @param m1, b1 First line
-     * @param m2, b2 Second line
-     * @return Intersection point (inf if parallel)
-     */
-    Point2D getIntersectionLines(double m1, double b1, double m2, double b2) const;
-    
-    /**
-     * @brief Get intersection points of line and circle
-     * @param m, b Line parameters
-     * @param center Circle center
-     * @param radius Circle radius
-     * @param p1, p2 Output intersection points
-     * @return Number of intersection points (0, 1, or 2)
-     */
-    int getIntersectionLineCircle(double m, double b, 
-                                  const Point2D& center, double radius,
-                                  Point2D& p1, Point2D& p2) const;
-    
-    /**
-     * @brief Calculate total path length
-     */
-    double calculatePathLength() const;
-    
-    // ========== Member Variables ==========
+
+    // ==========  Variables ==========
     RobotState m_state;
     Point2D m_target;
     double m_turning_radius;
@@ -179,9 +111,31 @@ private:
     Waypoints m_waypoints;
     std::vector<Point2D> m_centers;
     
-    // Constants
+    // ========== Constants ==========
     static constexpr double INF = std::numeric_limits<double>::infinity();
-    static constexpr double EPSILON = 1e-9;
+    static constexpr double EPSILON = 0.5; // Tolerance for disalignment of target and heading (in meters)
+    static constexpr double ANGLE_THRESHOLD = 3.0;  // Bellow this use straight line approach instead of angled approach
+
+    // ========== Internal Path Calculation ==========
+    bool calculatePathGeometry();
+    Point2D getPathPoint(double s);
+    
+    // ========== Utility Functions ==========
+
+    bool isAngleNearAxis(double theta);
+    double normalizeAngle(double angle) const;
+    double angleDiff(double a, double b) const;
+    bool getTangentCircle(double m1, double b1, double m2, double b2,
+                         const Point2D& A, const Point2D& B,
+                         Point2D& vertex, Point2D& circle_center, 
+                         double& circle_radius, double radius = -1.0);
+    Point2D getIntersectionLines(double m1, double b1, double m2, double b2) const;
+    int getIntersectionLineCircle(double m, double b, 
+                                  const Point2D& center, double radius,
+                                  Point2D& p1, Point2D& p2) const;
+    double calculatePathLength() const;
+    
+    
 };
 
 #endif // GEOMETRY_SOLVER_H

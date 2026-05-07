@@ -54,6 +54,7 @@ bool GeometrySolver::calculatePathGeometry()
 
     // -------- Target line calculation --------
     double m_target_line, b_target_line;
+    bool use_vertical_target = false;
 
     std::cout << "Target angle: " << m_target.theta * 180.0 / M_PI << "°" << std::endl;
 
@@ -70,7 +71,8 @@ bool GeometrySolver::calculatePathGeometry()
     
     } else {
         
-        bool use_vertical_target = (dy >= dx);
+        // Determine if we're approaching more vertically or horizontally (for legacy circle calculation)
+        use_vertical_target = (dy >= dx);
         
         if (use_vertical_target) {
             // Vertical line at target x-coordinate
@@ -84,13 +86,12 @@ bool GeometrySolver::calculatePathGeometry()
             b_target_line = m_target.y;
         }
     }
-    
-    // Determine if we're approaching more vertically or horizontally (for legacy circle calculation)
-    bool use_vertical_target = (dy >= dx);
 
     // -------- Check heading direction for reverse maneuver --------
     Point2D heading_dir(std::cos(m_state.theta), std::sin(m_state.theta));
-    std::cout << "Heading direction: (" << heading_dir.x << ", " << heading_dir.y << ")" << std::endl;
+        std::cout << "Heading direction: (" << heading_dir.x << ", " << heading_dir.y << ")";
+        std::cout << ", robot angle: " << m_state.theta * 180.0 / M_PI << "\u00b0";
+        std::cout << ", target angle: " << m_target.theta * 180.0 / M_PI << "\u00b0" << std::endl;
     std::cout << "Target direction: (" << (m_target.x - m_state.x) << ", " << (m_target.y - m_state.y) << ")" << std::endl;
     std::cout << "Angle between target and heading: " << (m_state.theta - std::atan2(dy, dx)) * 180.0 / M_PI << "°   " << std::endl;
     
