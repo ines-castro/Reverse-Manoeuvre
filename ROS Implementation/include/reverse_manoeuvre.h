@@ -173,11 +173,13 @@ namespace csai
         
         // Visualization & Debugging
         void publishDebugValues(float value1, float value2, float value3);
-        void visualizeDebugPose(const PathPoint& target, float angle, ros::Publisher& pub);
+        std_msgs::ColorRGBA colorFromRGB(const std::string &rgb);
+        void visualizeDebugArrow(ros::Publisher &pub, const PathPoint &origin, float angle, int action, const std::string &rgb);
         void clearDebugPose(ros::Publisher& pub);
         void visualizeLookaheadMarker(const PathPoint& point, int action = visualization_msgs::Marker::ADD);
         void visualisePath(const std::vector<PathPoint>& path);
         void clearAll();
+        void reset();
         
         // Command Publishers
         void publishVelocityCommand(float linear_x, float angular_z);
@@ -188,6 +190,14 @@ namespace csai
         int findClosestPathPoint(State cartState);
         float purePursuitControl(const State& control_point);
         void pathFollowing(const ros::TimerEvent& event);
+
+        // ==========================================================
+        // CONSTANTS
+        // ==========================================================
+        const std::string BLUSH_ROSE = "229, 83, 129";
+        const std::string CHERRY_BLOSSOM = "239, 169, 174";
+        const std::string TURQUOISE = "66, 217, 200";
+
 
     };
 

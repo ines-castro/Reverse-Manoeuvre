@@ -63,7 +63,7 @@ namespace csai
         m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true);
 
         publishVelocityCommand(0.0, 0.0); // Ensure robot is stopped at startup
-        m_lookaheadDist = 1.7f;
+        //publishStatus(Status::OFF, "Node ready to start reverse manoeuvre.");
     }
 
     // ==========================================================
@@ -187,7 +187,7 @@ namespace csai
         
         if (waypoints.empty())
         {
-            ROS_ERROR("Failed to generate reverse path");
+            ROS_ERROR("No path waypoints :(");
             return false;
         }
         
@@ -487,6 +487,16 @@ namespace csai
         visualizeDebugArrow(m_headingPub, dummy_point, 0.0, visualization_msgs::Marker::DELETE, TURQUOISE);
     }
 
+    void ReverseManoeuvre::reset()
+    {
+        publishVelocityCommand(0.0, 0.0); // Stop the robot immediately
+        m_prevClosestIndex = 0;  
+        m_controlTimer.stop();
+        m_tfTimer.stop();
+        clearAll();                       // Clear debug visualizations
+        publishStatus(Status::OFF, "Node reset and ready for new reverse manoeuvre.");
+    }
+
     // ==========================================================
     // COMMAND PUBLISHERS
     // ==========================================================
@@ -513,6 +523,7 @@ namespace csai
         // Log type according to severity of the status
         if (status == Status::FAILED || status == Status::CANCELLED){
             ROS_ERROR("%s", error_description.c_str());
+            reset(); 
         } else if (m_debug) {
             ROS_INFO("%s", error_description.c_str());
         }
@@ -592,20 +603,23 @@ namespace csai
         float dy = local_target.y - control_point.y;
         float pathAngle = std::atan2(-dy, -dx);
 
-        // Visualisation in Rviz
-        visualizeLookaheadMarker(local_target);
-        visualizeDebugArrow(m_pathAnglePub, local_target, pathAngle, visualization_msgs::Marker::ADD, CHERRY_BLOSSOM); 
-        PathPoint cp_as_point;
-        cp_as_point.x = control_point.x;
-        cp_as_point.y = control_point.y;
-        visualizeDebugArrow(m_headingPub, cp_as_point, control_point.heading, visualization_msgs::Marker::ADD, TURQUOISE);
-
         // Pure Pursuit control law: κ = 2sin(α)/L where α is heading error, L is lookahead distance
         float headingError = normalizeAngle(pathAngle - control_point.heading);
         float kappa = -2.0f * std::sin(headingError) / m_lookaheadDist;
 
-        // Values for rqt plot
-        publishDebugValues(pathAngle, kappa, headingError);
+        // Visualisation in Rviz
+        if (m_debug)
+        {
+            visualizeLookaheadMarker(local_target);
+            visualizeDebugArrow(m_pathAnglePub, local_target, pathAngle, visualization_msgs::Marker::ADD, CHERRY_BLOSSOM); 
+            PathPoint cp_as_point;
+            cp_as_point.x = control_point.x;
+            cp_as_point.y = control_point.y;
+            visualizeDebugArrow(m_headingPub, cp_as_point, control_point.heading, visualization_msgs::Marker::ADD, TURQUOISE);
+
+            // Values for rqt plot
+            publishDebugValues(pathAngle, kappa, headingError);
+        }
 
         return kappa;
     }
@@ -628,10 +642,7 @@ namespace csai
         if (distanceToTarget < m_goalTolerance and fabs(m_gripperAngle) < 7.0f) // Check if close enough to target position and gripper is closed
         {
             publishStatus(Status::SUCCESS, "Reverse manoeuvre completed successfully.");
-            publishVelocityCommand(0.0, 0.0);
-            clearAll();     // Clear debug visualizations
-            m_controlTimer.stop();
-            m_tfTimer.stop(); // Stop publishing cart TF transforms
+            reset();
             return;
         }
 
