@@ -1,141 +1,204 @@
-#ifndef GEOMETRY_SOLVER_H
-#define GEOMETRY_SOLVER_H
+#ifndef REVERSE_MANOEUVRE_H
+#define REVERSE_MANOEUVRE_H
 
+#include <ros/ros.h>
+#include <geometry_msgs/Twist.h>
+#include <geometry_msgs/TransformStamped.h>
+#include <nav_msgs/Path.h>
+#include <std_msgs/Float32.h>
+#include <std_msgs/Float64.h>
+#include <std_msgs/Empty.h>
+#include <std_msgs/String.h>
+#include <std_msgs/Float32MultiArray.h>
+#include <reverse_manoeuvre/ReverseStatus.h>  // Custom message
+#include <nlohmann/json.hpp>  // For JSON parsing in startCb
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.h>
+#include <visualization_msgs/Marker.h>
+#include <movai_common/PayloadInfo.h>
 #include <vector>
+#include <string>
 #include <cmath>
 #include <limits>
-#include <iostream>
-#include <algorithm>
+#include "geometry_solver.h"
 
-// Simple 2D point structure
-struct Point2D
+constexpr float DEG_TO_RAD = M_PI / 180.0f;
+
+enum Status
 {
-    double x;
-    double y;
-    double theta;  // Optional angle for target points (default 0)
-    
-    Point2D() : x(0.0), y(0.0), theta(0.0) {}
-    Point2D(double x_, double y_, double theta_ = 0.0) : x(x_), y(y_), theta(theta_) {}
-    
-    Point2D operator+(const Point2D& other) const {
-        return Point2D(x + other.x, y + other.y);
-    }
-    
-    Point2D operator-(const Point2D& other) const {
-        return Point2D(x - other.x, y - other.y);
-    }
-    
-    Point2D operator*(double scalar) const {
-        return Point2D(x * scalar, y * scalar);
-    }
-    
-    Point2D operator/(double scalar) const {
-        return Point2D(x / scalar, y / scalar);
-    }
-    
-    double norm() const {
-        return std::sqrt(x * x + y * y);
-    }
-    
-    double dot(const Point2D& other) const {
-        return x * other.x + y * other.y;
-    }
-    
-    Point2D normalize() const {
-        double n = norm();
-        if (n < 1e-9) return Point2D(0, 0);
-        return Point2D(x / n, y / n);
-    }
+    OFF,
+    RUNNING,
+    SUCCESS,
+    FAILED,
+    CANCELLED
 };
 
-// State structure: [x, y, theta]
-struct RobotState
-{
-    double x;
-    double y;
-    double theta;  // heading in radians
-    
-    RobotState() : x(0.0), y(0.0), theta(0.0) {}
-    RobotState(double x_, double y_, double theta_) : x(x_), y(y_), theta(theta_) {}
-    
-    Point2D position() const {
-        return Point2D(x, y);
+// Convert Status enum to string for ROS message
+inline std::string statusToString(Status status) {
+    switch (status) {
+        case OFF: return "OFF";
+        case RUNNING: return "RUNNING";
+        case SUCCESS: return "SUCCESS";
+        case FAILED: return "FAILED";
+        case CANCELLED: return "CANCELLED";
+        default: return "UNKNOWN";
     }
-};
+}
 
-// Internal waypoints structure
-struct Waypoints
+struct PathPoint
 {
-    Point2D initial;
-    Point2D turning;
-    Point2D exit_point;
-    Point2D target;
+    float x;
+    float y;
+    
+    // Default constructor
+    PathPoint() : x(0.0f), y(0.0f) {}
+    
+    // Constructor from x, y
+    PathPoint(float x_, float y_) : x(x_), y(y_) {}
+    
+    // Constructor from Point2D (for seamless conversion)
+    PathPoint(const Point2D& p) : x(p.x), y(p.y) {}
 };
 
-// Path state enumeration
-enum class PathState
+struct State
 {
-    UNINITIALIZED,      // Geometry not yet calculated
-    STRAIGHT_LINE,      // Simple straight line (dx=0 or dy=0)
-    ANGLED_APPROACH,    // Approach with specified target angle
-    NORMAL,             // Normal reverse with single arc
-    OVERSHOOT,          // Overshoot case with two arcs
-    FAILED              // Calculation failed (impossible geometry)
+    float x;
+    float y;
+    float heading;
 };
 
-class GeometrySolver
+namespace csai 
 {
-public:
-    /**
-     * @brief Constructor
-     * @param state Initial robot state [x, y, theta]
-     * @param target Target position [x, y]
-     * @param turning_radius Minimum turning radius of the robot
-     */
-    GeometrySolver(const RobotState& state, const Point2D& target, double turning_radius);
-    
+    class ReverseManoeuvre 
+    {
+    public:
+        // Constructor & Destructor
+        ReverseManoeuvre(ros::NodeHandle &f_nh, ros::NodeHandle &f_nhPriv);
+        ~ReverseManoeuvre();
 
-    std::vector<Point2D> generatePath(double spacing = 0.05);
-    void setDebug(bool debug) { m_debug = debug; }
-    
-private:
+    private:
+        // ==========================================================
+        // ROS COMMUNICATION
+        // ==========================================================
+        ros::NodeHandle m_nh;
+        ros::NodeHandle m_nhPriv;
+        
+        // TF
+        tf2_ros::Buffer m_tfBuffer;
+        tf2_ros::TransformListener m_tfListener; 
+        tf2_ros::TransformBroadcaster m_tfBroadcaster;
+        
+        // Subscribers
+        ros::Subscriber m_gripperAngleSub;
+        ros::Subscriber m_payloadIdSub;
+        ros::Subscriber m_triggerSub;
+        ros::Subscriber m_cancelSub;
+        ros::Subscriber m_startSub;
+        
+        // Timers
+        ros::Timer m_tfTimer;
+        ros::Timer m_controlTimer;
+        
+        // Publishers
+        ros::Publisher m_cmdPub;
+        ros::Publisher m_statusPub;
+        ros::Publisher m_pathPub;
+        ros::Publisher m_debugPub;
+        ros::Publisher m_pathAnglePub;
+        ros::Publisher m_headingPub;
+        ros::Publisher m_lookaheadMarkerPub;
+        ros::Publisher m_cartWheelbasePub;     
 
-    // ==========  Variables ==========
-    RobotState m_state;
-    Point2D m_target;
-    double m_turning_radius;
-    bool m_debug;
-    
-    // Cached geometry results
-    PathState m_path_state;
-    Waypoints m_waypoints;
-    std::vector<Point2D> m_centers;
-    
-    // ========== Constants ==========
-    static constexpr double INF = std::numeric_limits<double>::infinity();
-    static constexpr double EPSILON = 0.5; // Tolerance for disalignment of target and heading (in meters)
-    static constexpr double ANGLE_THRESHOLD = 3.0;  // Bellow this use straight line approach instead of angled approach
+        // ==========================================================
+        // STATE & CONFIGURATION
+        // ==========================================================
+        bool m_debug;
+        bool m_cartDimensionsLoaded;
+        
+        // Control parameters
+        float m_reverseSpeed;
+        float m_goalTolerance;
+        float m_lookaheadDist;
+        float m_initialOrientation;
+        
+        // Cart dimensions
+        float m_cartLength;
+        float m_fixedWheelDist;
+        float m_gripperLength;
+        
+        // Frame names
+        std::string m_worldFrame;
+        std::string m_robotFrame;
+        std::string m_gripperFrame;
+        std::string m_cartWheelsFrame;
+        std::string m_cartBackFrame;
+        
+        // Payload configuration
+        std::string m_payloadId;
+        XmlRpc::XmlRpcValue m_payloadConfig;
+        
+        // Path tracking
+        std::vector<PathPoint> m_referencePath;
+        PathPoint m_target;
+        PathPoint m_entryPoint;  
+        int m_prevClosestIndex;
+        
+        // State tracking
+        float m_gripperAngle;
+        State m_robotState;
+        State m_cartWheelsState;
+        State m_cartBackState;
 
-    // ========== Internal Path Calculation ==========
-    bool calculatePathGeometry();
-    Point2D getPathPoint(double s);
-    
-    // ========== Utility Functions ==========
+        // ==========================================================
+        // FUNCTION DECLARATIONS 
+        // ==========================================================
+        
+        // TF Operations
+        void robotTfCb(const ros::TimerEvent& event);
+        void sendOffsetTF(const std::string parent_frame, const std::string child_frame, float x_offset);
+        void updatePoseFromTF(const geometry_msgs::TransformStamped& transform, State& state);
+        void updateCartPoses();
+        
+        // Required Information (callbacks & loading)
+        void loadCsvPath(const std::string file_path);
+        bool generateReversePath(const State& initialState, const Point2D& target);
+        void gripperAngleCb(const std_msgs::Float32::ConstPtr& msg);
+        void payloadIdCb(const movai_common::PayloadInfo::ConstPtr& msg);
+        bool loadCartDimensions(const std::string& payload_id);
+        void cancelCb(const std_msgs::Empty::ConstPtr &msg);
+        void startCb(const std_msgs::String::ConstPtr &msg);
+        
+        // Visualization & Debugging
+        void publishDebugValues(float value1, float value2, float value3);
+        std_msgs::ColorRGBA colorFromRGB(const std::string &rgb);
+        void visualizeDebugArrow(ros::Publisher &pub, const PathPoint &origin, float angle, int action, const std::string &rgb);
+        void clearDebugPose(ros::Publisher& pub);
+        void visualizeLookaheadMarker(const PathPoint& point, int action = visualization_msgs::Marker::ADD);
+        void visualisePath(const std::vector<PathPoint>& path);
+        void clearAll();
+        
+        // Command Publishers
+        void publishVelocityCommand(float linear_x, float angular_z);
+        void publishStatus(Status status, const std::string& error_description = "");
+        
+        // Path Following Utilities
+        float normalizeAngle(float angle);
+        int findClosestPathPoint(State cartState);
+        float purePursuitControl(const State& control_point);
+        void pathFollowing(const ros::TimerEvent& event);
 
-    bool isAngleNearAxis(double theta);
-    double normalizeAngle(double angle) const;
-    double angleDiff(double a, double b) const;
-    bool getTangentCircle(double m1, double b1, double m2, double b2,
-                         const Point2D& A, const Point2D& B,
-                         Point2D& vertex, Point2D& circle_center, 
-                         double& circle_radius, double radius = -1.0);
-    Point2D getIntersectionLines(double m1, double b1, double m2, double b2) const;
-    int getIntersectionLineCircle(double m, double b, 
-                                  const Point2D& center, double radius,
-                                  Point2D& p1, Point2D& p2) const;
-    double calculatePathLength() const;
-    
-    
-};
+        // ==========================================================
+        // CONSTANTS
+        // ==========================================================
+        const std::string BLUSH_ROSE = "229, 83, 129";
+        const std::string CHERRY_BLOSSOM = "239, 169, 174";
+        const std::string TURQUOISE = "66, 217, 200";
 
-#endif // GEOMETRY_SOLVER_H
+
+    };
+
+} 
+#endif

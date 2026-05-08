@@ -56,8 +56,8 @@ namespace csai
         m_cartWheelbasePub = f_nh.advertise<std_msgs::Float64>("cart_wheelbase", 1, true);                // To not get it sfrom ioboard sim
         m_debugPub = f_nh.advertise<std_msgs::Float32MultiArray>("debug_values", 10);
         m_lookaheadMarkerPub = f_nh.advertise<visualization_msgs::Marker>("lookahead_marker", 10);
-        m_pathAnglePub = f_nh.advertise<geometry_msgs::PoseStamped>("path_angle", 1);
-        m_headingPub = f_nh.advertise<geometry_msgs::PoseStamped>("heading", 1);
+        m_pathAnglePub = f_nh.advertise<visualization_msgs::Marker>("path_angle", 10);
+        m_headingPub = f_nh.advertise<visualization_msgs::Marker>("heading", 10);
 
         // Latched topic sends it to new subscribers
         m_pathPub = f_nh.advertise<nav_msgs::Path>("reference_path", 1, true);
@@ -384,23 +384,47 @@ namespace csai
         m_debugPub.publish(debugMsg);
     }
 
-    void ReverseManoeuvre::visualizeDebugPose(const PathPoint &target, float angle, ros::Publisher &pub)
+    std_msgs::ColorRGBA ReverseManoeuvre::colorFromRGB(const std::string &rgb)
     {
-        geometry_msgs::PoseStamped poseMsg;
-        poseMsg.header.frame_id = m_worldFrame;
-        poseMsg.header.stamp = ros::Time::now();
+        std_msgs::ColorRGBA c;
+        int r, g, b;
+        sscanf(rgb.c_str(), "%d,%d,%d", &r, &g, &b);
+        c.r = r / 255.0f;
+        c.g = g / 255.0f;
+        c.b = b / 255.0f;
+        c.a = 1.0f;
+        return c;
+    }
 
-        // Position of the lookahead target
-        poseMsg.pose.position.x = target.x;
-        poseMsg.pose.position.y = target.y;
-        poseMsg.pose.position.z = 0.0;
+    void ReverseManoeuvre::visualizeDebugArrow(ros::Publisher &pub, const PathPoint &origin, float angle, int action, const std::string &rgb)
+    {
+        visualization_msgs::Marker marker;
+        marker.header.frame_id = m_worldFrame;
+        marker.header.stamp = ros::Time::now();
+
+        marker.id = 0;
+        marker.type = visualization_msgs::Marker::ARROW;
+        marker.action = action;
+
+        // Position of the debug arrows
+        marker.pose.position.x = origin.x;
+        marker.pose.position.y = origin.y;
+        marker.pose.position.z = 0.0;
 
         // Convert yaw angle to quaternion
         tf2::Quaternion q;
         q.setRPY(0, 0, angle);
-        poseMsg.pose.orientation = tf2::toMsg(q);
+        marker.pose.orientation = tf2::toMsg(q);
 
-        pub.publish(poseMsg);
+        // Mariquisses
+        marker.scale.x = 0.7;   // arrow length
+        marker.scale.y = 0.05;  // shaft diameter
+        marker.scale.z = 0.05;  // head diameter
+
+        // Color based on input string
+        marker.color = colorFromRGB(rgb);
+
+        pub.publish(marker);
     }
 
     void ReverseManoeuvre::visualizeLookaheadMarker(const PathPoint &point, int action)
@@ -422,10 +446,7 @@ namespace csai
         marker.scale.x = 0.1;
         marker.scale.y = 0.1;
         marker.scale.z = 0.1;
-        marker.color.a = 1.0;
-        marker.color.r = 0.380;
-        marker.color.g = 0.643;
-        marker.color.b = 0.678;
+        marker.color = colorFromRGB(BLUSH_ROSE);
 
         m_lookaheadMarkerPub.publish(marker);
     }
@@ -462,8 +483,8 @@ namespace csai
         visualisePath(m_referencePath);  
         PathPoint dummy_point(0.0, 0.0);  
         visualizeLookaheadMarker(dummy_point, visualization_msgs::Marker::DELETE);
-        m_pathAnglePub.shutdown();
-        m_headingPub.shutdown();
+        visualizeDebugArrow(m_pathAnglePub, dummy_point, 0.0, visualization_msgs::Marker::DELETE, CHERRY_BLOSSOM);
+        visualizeDebugArrow(m_headingPub, dummy_point, 0.0, visualization_msgs::Marker::DELETE, TURQUOISE);
     }
 
     // ==========================================================
@@ -573,18 +594,15 @@ namespace csai
 
         // Visualisation in Rviz
         visualizeLookaheadMarker(local_target);
-        visualizeDebugPose(local_target, pathAngle, m_pathAnglePub);
+        visualizeDebugArrow(m_pathAnglePub, local_target, pathAngle, visualization_msgs::Marker::ADD, CHERRY_BLOSSOM); 
         PathPoint cp_as_point;
         cp_as_point.x = control_point.x;
         cp_as_point.y = control_point.y;
-        visualizeDebugPose(cp_as_point, control_point.heading, m_headingPub);
+        visualizeDebugArrow(m_headingPub, cp_as_point, control_point.heading, visualization_msgs::Marker::ADD, TURQUOISE);
 
         // Pure Pursuit control law: κ = 2sin(α)/L where α is heading error, L is lookahead distance
         float headingError = normalizeAngle(pathAngle - control_point.heading);
         float kappa = -2.0f * std::sin(headingError) / m_lookaheadDist;
-
-        ROS_INFO("Path Angle: %.2f | Current Heading: %.2f | Error: %.2f", 
-                pathAngle, control_point.heading, headingError);
 
         // Values for rqt plot
         publishDebugValues(pathAngle, kappa, headingError);
@@ -601,7 +619,6 @@ namespace csai
         // ----------- Calculate reference heading -----------
         float curvature = purePursuitControl(m_cartWheelsState);
         float w = m_reverseSpeed * curvature; // Pure pursuit control law for angular velocity
-        ROS_WARN("Curvature: %.3f | Angular Velocity: %.3f", curvature, w);
 
         // ----------- Execution and stop conditions -----------
         float dx_target = m_target.x - m_cartBackState.x;
